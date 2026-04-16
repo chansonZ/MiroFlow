@@ -9,6 +9,7 @@ Note: Tools are dynamically discovered through the MCP protocol, not the registr
 """
 
 import asyncio
+import contextlib
 import functools
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -84,12 +85,97 @@ class ToolManager:
         }
         self.browser_session = None
         self.tool_blacklist = tool_blacklist if tool_blacklist else set()
+        self._persistent_sessions: dict[str, ClientSession] = {}
+        self._exit_stack: contextlib.AsyncExitStack | None = None
 
         logger.info(
             f"ToolManager initialized, loaded servers: {list(self.server_dict.keys())}"
         )
         if self.tool_blacklist:
             logger.info(f"Tool blacklist configured: {self.tool_blacklist}")
+
+    async def start_all_servers(self) -> None:
+        """Start all configured MCP servers and create persistent sessions.
+
+        Each server process is launched once and its ClientSession is kept alive
+        for the lifetime of the agent run so that subsequent tool calls and tool
+        definition queries can reuse the connection without the per-call overhead
+        of spawning a new subprocess.
+
+        The playwright server is intentionally excluded because PlaywrightSession
+        already manages its own persistent connection lifecycle.
+        """
+        if self._exit_stack is not None:
+            # Already started; nothing to do
+            return
+
+        self._exit_stack = contextlib.AsyncExitStack()
+        await self._exit_stack.__aenter__()
+
+        for config in self.server_configs:
+            server_name = config["name"]
+            server_params = config["params"]
+
+            # PlaywrightSession handles its own lifecycle; skip here
+            if server_name == "playwright":
+                continue
+
+            try:
+                if isinstance(server_params, StdioServerParameters):
+                    read, write = await self._exit_stack.enter_async_context(
+                        stdio_client(
+                            update_server_params_with_context_var(server_params)
+                        )
+                    )
+                elif isinstance(server_params, str) and server_params.startswith(
+                    ("http://", "https://")
+                ):
+                    read, write = await self._exit_stack.enter_async_context(
+                        sse_client(server_params)
+                    )
+                else:
+                    logger.error(
+                        f"Unknown server params type for '{server_name}': {type(server_params)}, skipping persistent session"
+                    )
+                    continue
+
+                session = await self._exit_stack.enter_async_context(
+                    ClientSession(read, write, sampling_callback=None)
+                )
+                await session.initialize()
+                self._persistent_sessions[server_name] = session
+                logger.info(
+                    f"Persistent MCP session started for server '{server_name}'"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to start persistent session for server '{server_name}': {e}"
+                )
+
+    async def stop_all_servers(self) -> None:
+        """Stop all persistent MCP server sessions and release resources.
+
+        Closes every context manager registered in the exit stack (ClientSessions
+        and their underlying stdio/SSE transports) and also closes the playwright
+        browser session if one was opened.
+        """
+        if self._exit_stack is not None:
+            try:
+                await self._exit_stack.aclose()
+            except Exception as e:
+                logger.error(f"Error while stopping MCP servers: {e}")
+            finally:
+                self._exit_stack = None
+                self._persistent_sessions.clear()
+                logger.info("All persistent MCP server sessions stopped")
+
+        if self.browser_session is not None:
+            try:
+                await self.browser_session.close()
+            except Exception as e:
+                logger.error(f"Error while closing browser session: {e}")
+            finally:
+                self.browser_session = None
 
     def _is_huggingface_dataset_or_space_url(self, url):
         """
@@ -183,6 +269,7 @@ class ToolManager:
         """
         Connect to all configured servers and get their tool definitions.
         Returns a list suitable for passing to Prompt generators.
+        Reuses persistent sessions started by start_all_servers() when available.
         """
         all_servers_for_prompt = []
         # Handle remote server tools
@@ -193,7 +280,24 @@ class ToolManager:
             logger.info(f"Getting tool definitions for server '{server_name}'...")
 
             try:
-                if isinstance(server_params, StdioServerParameters):
+                # Reuse persistent session if available
+                if server_name in self._persistent_sessions:
+                    session = self._persistent_sessions[server_name]
+                    tools_response = await session.list_tools()
+                    for tool in tools_response.tools:
+                        if (server_name, tool.name) in self.tool_blacklist:
+                            logger.info(
+                                f"Tool '{tool.name}' in server '{server_name}' is blacklisted, skipping."
+                            )
+                            continue
+                        one_server_for_prompt["tools"].append(
+                            {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "schema": tool.inputSchema,
+                            }
+                        )
+                elif isinstance(server_params, StdioServerParameters):
                     async with stdio_client(
                         update_server_params_with_context_var(server_params)
                     ) as (read, write):
@@ -261,6 +365,26 @@ class ToolManager:
                 all_servers_for_prompt.append(one_server_for_prompt)
 
         return all_servers_for_prompt
+
+    def _extract_tool_result_content(self, tool_result, tool_name: str) -> str:
+        """
+        Safely extract text content from an MCP tool result, preserving the
+        original format.  Logs a warning when the result is empty.
+
+        :param tool_result: The raw tool result object returned by session.call_tool()
+        :param tool_name: Tool name (used for log/fallback messages)
+        :return: Extracted text content string
+        """
+        if tool_result.content and len(tool_result.content) > 0:
+            text_content = tool_result.content[-1].text
+            if text_content is not None and text_content.strip():
+                return text_content  # Preserve original format!
+            return f"Tool '{tool_name}' completed but returned empty text - this may be expected or indicate an issue"
+
+        logger.error(
+            f"Tool '{tool_name}' returned empty content, tool_result.content: {tool_result.content}"
+        )
+        return f"Tool '{tool_name}' completed but returned no content - this may be expected or indicate an issue"
 
     @span()
     @with_timeout(900)
@@ -370,7 +494,25 @@ class ToolManager:
         else:
             try:
                 result_content = None
-                if isinstance(server_params, StdioServerParameters):
+                # Reuse persistent session if available
+                if server_name in self._persistent_sessions:
+                    try:
+                        tool_result = await self._persistent_sessions[
+                            server_name
+                        ].call_tool(tool_name, arguments=arguments)
+                        result_content = self._extract_tool_result_content(
+                            tool_result, tool_name
+                        )
+                        if self._should_block_hf_scraping(tool_name, arguments):
+                            result_content = "You are trying to scrape a Hugging Face dataset for answers, please do not use the scrape tool for this purpose."
+                    except Exception as tool_error:
+                        logger.error(f"Tool execution error: {tool_error}")
+                        return {
+                            "server_name": server_name,
+                            "tool_name": tool_name,
+                            "error": f"Tool execution failed: {str(tool_error)}",
+                        }
+                elif isinstance(server_params, StdioServerParameters):
                     async with stdio_client(
                         update_server_params_with_context_var(server_params)
                     ) as (read, write):
@@ -382,28 +524,9 @@ class ToolManager:
                                 tool_result = await session.call_tool(
                                     tool_name, arguments=arguments
                                 )
-                                # Safely extract result content without changing original format
-                                if tool_result.content and len(tool_result.content) > 0:
-                                    text_content = tool_result.content[-1].text
-                                    if (
-                                        text_content is not None
-                                        and text_content.strip()
-                                    ):
-                                        result_content = (
-                                            text_content  # Preserve original format!
-                                        )
-                                    else:
-                                        result_content = f"Tool '{tool_name}' completed but returned empty text - this may be expected or indicate an issue"
-                                else:
-                                    result_content = f"Tool '{tool_name}' completed but returned no content - this may be expected or indicate an issue"
-
-                                # If result is empty, log warning
-                                if not tool_result.content:
-                                    logger.error(
-                                        f"Tool '{tool_name}' returned empty content, tool_result.content: {tool_result.content}"
-                                    )
-
-                                # post hoc check for browsing agent reading answers from hf datsets
+                                result_content = self._extract_tool_result_content(
+                                    tool_result, tool_name
+                                )
                                 if self._should_block_hf_scraping(tool_name, arguments):
                                     result_content = "You are trying to scrape a Hugging Face dataset for answers, please do not use the scrape tool for this purpose."
                             except Exception as tool_error:
@@ -425,28 +548,9 @@ class ToolManager:
                                 tool_result = await session.call_tool(
                                     tool_name, arguments=arguments
                                 )
-                                # Safely extract result content without changing original format
-                                if tool_result.content and len(tool_result.content) > 0:
-                                    text_content = tool_result.content[-1].text
-                                    if (
-                                        text_content is not None
-                                        and text_content.strip()
-                                    ):
-                                        result_content = (
-                                            text_content  # Preserve original format!
-                                        )
-                                    else:
-                                        result_content = f"Tool '{tool_name}' completed but returned empty text - this may be expected or indicate an issue"
-                                else:
-                                    result_content = f"Tool '{tool_name}' completed but returned no content - this may be expected or indicate an issue"
-
-                                # If result is empty, log warning
-                                if not tool_result.content:
-                                    logger.error(
-                                        f"Tool '{tool_name}' returned empty content, tool_result.content: {tool_result.content}"
-                                    )
-
-                                # post hoc check for browsing agent reading answers from hf datsets
+                                result_content = self._extract_tool_result_content(
+                                    tool_result, tool_name
+                                )
                                 if self._should_block_hf_scraping(tool_name, arguments):
                                     result_content = "You are trying to scrape a Hugging Face dataset for answers, please do not use the scrape tool for this purpose."
                             except Exception as tool_error:

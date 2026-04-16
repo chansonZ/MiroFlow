@@ -110,8 +110,11 @@ class BaseAgent(ABC):
     @span()
     async def run(self, ctx: AgentContext) -> AgentContext:
         await self.post_initialize()
-        ret = await self.run_internal(ctx)
-        return ret
+        try:
+            ret = await self.run_internal(ctx)
+            return ret
+        finally:
+            await self.tool_manager.stop_all_servers()
 
     async def run_as_mcp_tool(
         self, ctx: AgentContext, return_ctx_key: str
@@ -129,6 +132,7 @@ class BaseAgent(ABC):
             )
 
     async def post_initialize(self):
+        await self.tool_manager.start_all_servers()
         await self.init_tool_definitions()
 
     @staticmethod
