@@ -30,6 +30,10 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatusUpdate> {
   return response.data;
 }
 
+export async function cancelTask(taskId: string): Promise<void> {
+  await apiClient.post(`/api/tasks/${taskId}/cancel`);
+}
+
 export async function deleteTask(taskId: string): Promise<void> {
   await apiClient.delete(`/api/tasks/${taskId}`);
 }

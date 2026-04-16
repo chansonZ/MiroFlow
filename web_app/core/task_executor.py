@@ -30,6 +30,8 @@ class TaskExecutor:
         self.executor = ThreadPoolExecutor(max_workers=config.max_concurrent_tasks)
         self._running_tasks: dict[str, threading.Thread] = {}
         self._task_tracers: dict[str, Any] = {}
+        self._task_loops: dict[str, asyncio.AbstractEventLoop] = {}
+        self._async_tasks: dict[str, asyncio.Task] = {}
 
     def submit_task(
         self,
@@ -39,13 +41,23 @@ class TaskExecutor:
         file_info: FileInfo | None = None,
     ) -> None:
         """Submit a task for background execution."""
-        thread = threading.Thread(
-            target=self._run_task_sync,
-            args=(task_id, task_description, config_path, file_info),
-            daemon=True,
-        )
-        self._running_tasks[task_id] = thread
-        thread.start()
+        loop: asyncio.AbstractEventLoop | None = None
+        try:
+            loop = asyncio.new_event_loop()
+            self._task_loops[task_id] = loop
+            thread = threading.Thread(
+                target=self._run_task_sync,
+                args=(task_id, task_description, config_path, file_info, loop),
+                daemon=True,
+            )
+            self._running_tasks[task_id] = thread
+            thread.start()
+        except Exception:
+            self._task_loops.pop(task_id, None)
+            self._running_tasks.pop(task_id, None)
+            if loop is not None:
+                loop.close()
+            raise
 
     def _run_task_sync(
         self,
@@ -53,9 +65,46 @@ class TaskExecutor:
         task_description: str,
         config_path: str,
         file_info: FileInfo | None,
+        loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Synchronous wrapper for async task execution."""
-        asyncio.run(self._run_task(task_id, task_description, config_path, file_info))
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                self._run_task_wrapper(task_id, task_description, config_path, file_info)
+            )
+        finally:
+            # Drain any remaining pending tasks (excluding already-done ones)
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+            self._task_loops.pop(task_id, None)
+
+    async def _run_task_wrapper(
+        self,
+        task_id: str,
+        task_description: str,
+        config_path: str,
+        file_info: FileInfo | None,
+    ) -> None:
+        """Wrapper that stores the asyncio.Task reference for external cancellation."""
+        current = asyncio.current_task()
+        if current is not None:
+            self._async_tasks[task_id] = current
+        try:
+            await self._run_task(task_id, task_description, config_path, file_info)
+        except asyncio.CancelledError:
+            self.session_manager.update_task(
+                task_id,
+                {
+                    "status": "cancelled",
+                    "error_message": "Task cancelled by user",
+                },
+            )
+            raise
+        finally:
+            self._async_tasks.pop(task_id, None)
 
     async def _run_task(
         self,
@@ -356,8 +405,15 @@ class TaskExecutor:
         return output
 
     def cancel_task(self, task_id: str) -> bool:
-        """Cancel a running task (best effort - marks as cancelled)."""
+        """Cancel a running task by cancelling its asyncio coroutine."""
+        loop = self._task_loops.get(task_id)
+        task = self._async_tasks.get(task_id)
+        if loop and task and not task.done():
+            # Schedule cancellation inside the task's event loop (thread-safe)
+            loop.call_soon_threadsafe(task.cancel)
+            return True
         if task_id in self._running_tasks:
+            # Fallback: thread exists but loop/task not yet registered
             self.session_manager.update_task(
                 task_id,
                 {

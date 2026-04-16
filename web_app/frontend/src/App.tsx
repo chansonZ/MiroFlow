@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Bot, Send, Plus, Trash2, Loader2, Menu, X, Square, Paperclip, File, ChevronDown, ChevronRight, Brain, Search, Globe, Code, Lightbulb, Wrench, List, CheckCircle } from 'lucide-react';
-import { createTask, listTasks, getTask, getTaskStatus, deleteTask, listConfigs, uploadFile } from './api/tasks';
+import { createTask, listTasks, getTask, getTaskStatus, deleteTask, cancelTask, listConfigs, uploadFile } from './api/tasks';
 import { usePolling } from './hooks/usePolling';
 import type { TaskStatusUpdate, UploadResponse, FileInfo } from './types/task';
 import MarkdownRenderer from './components/common/MarkdownRenderer';
@@ -113,7 +113,7 @@ export default function App() {
 
   // Cancel/Stop task mutation
   const cancelMutation = useMutation({
-    mutationFn: deleteTask,
+    mutationFn: cancelTask,
     onSuccess: () => {
       refetchTasks();
       refetchSelectedTask();
