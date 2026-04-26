@@ -117,6 +117,18 @@ class TestHasValidAnswer:
         ctx = _make_ctx(final_boxed_answer="42", llm_extracted_final_answer="")
         assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is True
 
+    def test_no_answer_marker_is_not_valid(self):
+        # extract_gaia_final_answer returns "NO_ANSWER" when summary has no info.
+        # This must be treated as a placeholder so the fallback is triggered.
+        for marker in ("NO_ANSWER", "CANNOT_DETERMINE", "INSUFFICIENT_INFO", "UNKNOWN"):
+            ctx = _make_ctx(
+                final_boxed_answer=marker,
+                llm_extracted_final_answer="some long LLM explanation text",
+            )
+            assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is False, (
+                f"Expected {marker!r} to be treated as a placeholder"
+            )
+
     def test_valid_llm_extracted_without_boxed_is_not_valid(self):
         # llm_extracted_final_answer alone is no longer sufficient; only
         # final_boxed_answer is authoritative.  A non-empty llm_extracted value
@@ -165,6 +177,24 @@ class TestRunInternalNoop:
         # B-style fallback must have run and produced output
         proc.llm_client.create_message.assert_called_once()
         assert result.get("final_boxed_answer") == "Fallback answer for incomplete task"
+
+    @pytest.mark.asyncio
+    async def test_runs_when_final_boxed_is_no_answer_marker(self):
+        # The root-cause of the second bug: FinalAnswerExtractor sets
+        # final_boxed_answer="NO_ANSWER" when summary was a placeholder.
+        # The fallback MUST run in this case.
+        proc = _make_processor(b_response="Based on the search history, the answer is Paris.")
+        ctx = _make_ctx(
+            final_boxed_answer="NO_ANSWER",
+            llm_extracted_final_answer="I cannot determine the answer from the provided information.",
+            task_description="What is the capital of France?",
+            message_history=[
+                {"role": "assistant", "content": "I searched for the capital of France..."},
+            ],
+        )
+        result = await proc.run_internal(ctx)
+        proc.llm_client.create_message.assert_called_once()
+        assert result.get("final_boxed_answer") == "Based on the search history, the answer is Paris."
 
 
 # ---------------------------------------------------------------------------
