@@ -119,7 +119,7 @@ class TestHasValidAnswer:
 
     def test_valid_llm_extracted_without_boxed_is_not_valid(self):
         # llm_extracted_final_answer alone is no longer sufficient; only
-        # final_boxed_answer is authoritative.  An non-empty llm_extracted value
+        # final_boxed_answer is authoritative.  A non-empty llm_extracted value
         # with an empty/placeholder final_boxed should still trigger the fallback.
         ctx = _make_ctx(final_boxed_answer="", llm_extracted_final_answer="Paris")
         assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is False
