@@ -138,12 +138,24 @@ class TaskExecutor:
             final_messages = self._get_all_messages_from_tracer(tracer)
 
             # Update session with results and full message history
+            final_answer = result.get("final_boxed_answer", "") or ""
+            summary = result.get("summary", "") or ""
+            exceed_max_turn_summary = result.get("exceed_max_turn_summary", "") or ""
+
+            # Safety net: if final_answer is still empty but exceed_max_turn_summary
+            # exists (produced by ExceedMaxTurnSummaryGenerator), surface it so the
+            # user always sees something meaningful in the web UI.
+            if not final_answer and exceed_max_turn_summary:
+                final_answer = exceed_max_turn_summary
+            if not summary and exceed_max_turn_summary:
+                summary = exceed_max_turn_summary
+
             self.session_manager.update_task(
                 task_id,
                 {
                     "status": "completed",
-                    "final_answer": result.get("final_boxed_answer", ""),
-                    "summary": result.get("summary", ""),
+                    "final_answer": final_answer,
+                    "summary": summary,
                     "messages": final_messages,
                 },
             )

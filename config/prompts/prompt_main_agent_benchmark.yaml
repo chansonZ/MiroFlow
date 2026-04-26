@@ -168,6 +168,27 @@ template:
       What happened: [describe the approach taken and why a final answer was not reached]
       Useful findings: [list any facts, intermediate results, or conclusions discovered that should be reused]
 
+  fallback_final_answer_prompt:
+    components:
+      - basic_fallback_final_answer_prompt
+
+    required_context:
+      - task_description
+
+    basic_fallback_final_answer_prompt: |
+      Based on the full conversation above, please provide a comprehensive final answer to the original task.
+
+      The original task is:
+      "{{ task_description }}"
+
+      Instructions:
+      - Do NOT call any tools. Summarise based solely on the information already gathered in this conversation.
+      - Provide the most helpful and complete answer possible given what was discovered.
+      - If the task was fully completed, summarise the final result clearly.
+      - If the task was only partially completed, describe what was found and provide your best conclusion.
+      - Format your response in clear, user-readable Markdown.
+      - Focus on being informative and useful to the user rather than dwelling on technical failures.
+
   exceed_max_turn_summary_header:
     components:
       - header_text
