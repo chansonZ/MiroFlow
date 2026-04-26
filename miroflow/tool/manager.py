@@ -142,7 +142,9 @@ class ToolManager:
                         )
                     else:
                         # Default: Streamable HTTP (FastMCP 2.x+ / MCP spec v0.3+)
-                        read, write, _ = await self._exit_stack.enter_async_context(
+                        # streamablehttp_client returns (read, write, get_session_id);
+                        # get_session_id is a callable for session tracking, not needed here.
+                        read, write, _get_session_id = await self._exit_stack.enter_async_context(
                             streamablehttp_client(url)
                         )
                 elif isinstance(server_params, str) and server_params.startswith(
@@ -269,7 +271,7 @@ class ToolManager:
                                         servers_with_tool.append(server_name)
                                         break
                     else:
-                        async with streamablehttp_client(url) as (read, write, _):
+                        async with streamablehttp_client(url) as (read, write, _get_session_id):  # _get_session_id: callable for session tracking, not needed here
                             async with ClientSession(
                                 read, write, sampling_callback=None
                             ) as session:
@@ -389,7 +391,7 @@ class ToolManager:
                                         }
                                     )
                     else:
-                        async with streamablehttp_client(url) as (read, write, _):
+                        async with streamablehttp_client(url) as (read, write, _get_session_id):  # _get_session_id: callable for session tracking, not needed here
                             async with ClientSession(
                                 read, write, sampling_callback=None
                             ) as session:
@@ -648,7 +650,7 @@ class ToolManager:
                                         "error": f"Tool execution failed: {str(tool_error)}",
                                     }
                     else:
-                        async with streamablehttp_client(url) as (read, write, _):
+                        async with streamablehttp_client(url) as (read, write, _get_session_id):  # _get_session_id: callable for session tracking, not needed here
                             async with ClientSession(
                                 read, write, sampling_callback=None
                             ) as session:
