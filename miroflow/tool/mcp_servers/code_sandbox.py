@@ -11,6 +11,7 @@ running shell commands, and managing files in the sandbox.
 Based on MiroThinker's python_mcp_server implementation with improvements.
 """
 
+import argparse
 import asyncio
 import os
 import shlex
@@ -450,4 +451,33 @@ async def download_file_from_sandbox_to_local(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio", show_banner=False)
+    parser = argparse.ArgumentParser(description="Code Sandbox MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport method: 'stdio' or 'http' (default: stdio)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8002,
+        help="Port to use when running with HTTP transport (default: 8002)",
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default="/mcp",
+        help="URL path to use when running with HTTP transport (default: /mcp)",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio", show_banner=False)
+    else:
+        mcp.run(
+            transport="streamable-http",
+            port=args.port,
+            path=args.path,
+            show_banner=False,
+        )

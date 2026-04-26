@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import asyncio
 import json
 import logging
@@ -873,7 +874,33 @@ async def extract_info_with_llm(
 
 
 if __name__ == "__main__":
-    # Example usage and testing
+    parser = argparse.ArgumentParser(description="Jina Scrape MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport method: 'stdio' or 'http' (default: stdio)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8003,
+        help="Port to use when running with HTTP transport (default: 8003)",
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default="/mcp",
+        help="URL path to use when running with HTTP transport (default: /mcp)",
+    )
+    args = parser.parse_args()
 
-    # Run the MCP server
-    mcp.run(transport="stdio", show_banner=False)
+    if args.transport == "stdio":
+        mcp.run(transport="stdio", show_banner=False)
+    else:
+        mcp.run(
+            transport="streamable-http",
+            port=args.port,
+            path=args.path,
+            show_banner=False,
+        )

@@ -1,0 +1,8 @@
+# Remote MCP tool configuration for tool-code-sandbox
+# Points to an independently running HTTP MCP service.
+# The service is started via docker-compose.mcp.yml or scripts/start_mcp_servers.sh.
+#
+# Environment variable override: TOOL_CODE_SANDBOX_URL (default: http://localhost:8002/mcp)
+name: "tool-code-sandbox"
+url: "${oc.env:TOOL_CODE_SANDBOX_URL,http://localhost:8002/mcp}"
+transport: "streamable-http"

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import json
 import logging
 import os
@@ -203,4 +204,33 @@ async def google_search(
 
 
 if __name__ == "__main__":
-    mcp.run(show_banner=False)
+    parser = argparse.ArgumentParser(description="Serper Search MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport method: 'stdio' or 'http' (default: stdio)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8001,
+        help="Port to use when running with HTTP transport (default: 8001)",
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default="/mcp",
+        help="URL path to use when running with HTTP transport (default: /mcp)",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio", show_banner=False)
+    else:
+        mcp.run(
+            transport="streamable-http",
+            port=args.port,
+            path=args.path,
+            show_banner=False,
+        )

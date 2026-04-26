@@ -11,18 +11,18 @@ Note: Tools are dynamically discovered through the MCP protocol, not the registr
 import asyncio
 import contextlib
 import functools
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, Optional, List, TypeVar
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
 from miroflow.logging.task_tracer import get_tracer
 from .mcp_servers.browser_session import PlaywrightSession
 from miroflow.utils.tool_utils import format_tool_result
 from miroflow.logging.decorators import span
 from .factory import get_mcp_server_configs_from_tool_cfg_paths
-from typing import Optional, List
 
 logger = get_tracer()
 
@@ -104,6 +104,12 @@ class ToolManager:
 
         The playwright server is intentionally excluded because PlaywrightSession
         already manages its own persistent connection lifecycle.
+
+        Supports three transport modes (determined by the type of server_params):
+          * StdioServerParameters  → stdio subprocess (local)
+          * dict {"url": ..., "transport": "streamable-http"} → Streamable HTTP
+          * dict {"url": ..., "transport": "sse"} → legacy SSE
+          * str (legacy) → treated as SSE URL for backward compatibility
         """
         if self._exit_stack is not None:
             # Already started; nothing to do
@@ -127,9 +133,22 @@ class ToolManager:
                             update_server_params_with_context_var(server_params)
                         )
                     )
+                elif isinstance(server_params, dict) and "url" in server_params:
+                    transport = server_params.get("transport", "streamable-http")
+                    url = server_params["url"]
+                    if transport == "sse":
+                        read, write = await self._exit_stack.enter_async_context(
+                            sse_client(url)
+                        )
+                    else:
+                        # Default: Streamable HTTP (FastMCP 2.x+ / MCP spec v0.3+)
+                        read, write, _ = await self._exit_stack.enter_async_context(
+                            streamablehttp_client(url)
+                        )
                 elif isinstance(server_params, str) and server_params.startswith(
                     ("http://", "https://")
                 ):
+                    # Legacy: bare URL string → treat as SSE for backward compat
                     read, write = await self._exit_stack.enter_async_context(
                         sse_client(server_params)
                     )
@@ -233,10 +252,39 @@ class ToolManager:
                                 if tool.name == tool_name:
                                     servers_with_tool.append(server_name)
                                     break
+                elif isinstance(server_params, dict) and "url" in server_params:
+                    transport = server_params.get("transport", "streamable-http")
+                    url = server_params["url"]
+                    if transport == "sse":
+                        async with sse_client(url) as (read, write):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                tools_response = await session.list_tools()
+                                for tool in tools_response.tools:
+                                    if (server_name, tool.name) in self.tool_blacklist:
+                                        continue
+                                    if tool.name == tool_name:
+                                        servers_with_tool.append(server_name)
+                                        break
+                    else:
+                        async with streamablehttp_client(url) as (read, write, _):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                tools_response = await session.list_tools()
+                                for tool in tools_response.tools:
+                                    if (server_name, tool.name) in self.tool_blacklist:
+                                        continue
+                                    if tool.name == tool_name:
+                                        servers_with_tool.append(server_name)
+                                        break
                 elif isinstance(server_params, str) and server_params.startswith(
                     ("http://", "https://")
                 ):
-                    # SSE endpoint
+                    # Legacy: bare URL string → SSE for backward compatibility
                     async with sse_client(server_params) as (read, write):
                         async with ClientSession(
                             read, write, sampling_callback=None
@@ -320,10 +368,47 @@ class ToolManager:
                                         "schema": tool.inputSchema,
                                     }
                                 )
+                elif isinstance(server_params, dict) and "url" in server_params:
+                    transport = server_params.get("transport", "streamable-http")
+                    url = server_params["url"]
+                    if transport == "sse":
+                        async with sse_client(url) as (read, write):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                tools_response = await session.list_tools()
+                                for tool in tools_response.tools:
+                                    if (server_name, tool.name) in self.tool_blacklist:
+                                        continue
+                                    one_server_for_prompt["tools"].append(
+                                        {
+                                            "name": tool.name,
+                                            "description": tool.description,
+                                            "schema": tool.inputSchema,
+                                        }
+                                    )
+                    else:
+                        async with streamablehttp_client(url) as (read, write, _):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                tools_response = await session.list_tools()
+                                for tool in tools_response.tools:
+                                    if (server_name, tool.name) in self.tool_blacklist:
+                                        continue
+                                    one_server_for_prompt["tools"].append(
+                                        {
+                                            "name": tool.name,
+                                            "description": tool.description,
+                                            "schema": tool.inputSchema,
+                                        }
+                                    )
                 elif isinstance(server_params, str) and server_params.startswith(
                     ("http://", "https://")
                 ):
-                    # SSE endpoint
+                    # Legacy: bare URL string → SSE for backward compatibility
                     async with sse_client(server_params) as (read, write):
                         async with ClientSession(
                             read, write, sampling_callback=None
@@ -536,9 +621,58 @@ class ToolManager:
                                     "tool_name": tool_name,
                                     "error": f"Tool execution failed: {str(tool_error)}",
                                 }
+                elif isinstance(server_params, dict) and "url" in server_params:
+                    transport = server_params.get("transport", "streamable-http")
+                    url = server_params["url"]
+                    if transport == "sse":
+                        ctx_mgr = sse_client(url)
+                        async with ctx_mgr as (read, write):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                try:
+                                    tool_result = await session.call_tool(
+                                        tool_name, arguments=arguments
+                                    )
+                                    result_content = self._extract_tool_result_content(
+                                        tool_result, tool_name
+                                    )
+                                    if self._should_block_hf_scraping(tool_name, arguments):
+                                        result_content = "You are trying to scrape a Hugging Face dataset for answers, please do not use the scrape tool for this purpose."
+                                except Exception as tool_error:
+                                    logger.error(f"Tool execution error: {tool_error}")
+                                    return {
+                                        "server_name": server_name,
+                                        "tool_name": tool_name,
+                                        "error": f"Tool execution failed: {str(tool_error)}",
+                                    }
+                    else:
+                        async with streamablehttp_client(url) as (read, write, _):
+                            async with ClientSession(
+                                read, write, sampling_callback=None
+                            ) as session:
+                                await session.initialize()
+                                try:
+                                    tool_result = await session.call_tool(
+                                        tool_name, arguments=arguments
+                                    )
+                                    result_content = self._extract_tool_result_content(
+                                        tool_result, tool_name
+                                    )
+                                    if self._should_block_hf_scraping(tool_name, arguments):
+                                        result_content = "You are trying to scrape a Hugging Face dataset for answers, please do not use the scrape tool for this purpose."
+                                except Exception as tool_error:
+                                    logger.error(f"Tool execution error: {tool_error}")
+                                    return {
+                                        "server_name": server_name,
+                                        "tool_name": tool_name,
+                                        "error": f"Tool execution failed: {str(tool_error)}",
+                                    }
                 elif isinstance(server_params, str) and server_params.startswith(
                     ("http://", "https://")
                 ):
+                    # Legacy: bare URL string → SSE for backward compatibility
                     async with sse_client(server_params) as (read, write):
                         async with ClientSession(
                             read, write, sampling_callback=None
