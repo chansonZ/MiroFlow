@@ -132,13 +132,16 @@ class FallbackFinalAnswerGenerator(BaseIOProcessor):
 
     @staticmethod
     def _has_valid_answer(ctx: AgentContext) -> bool:
-        """Return True when a usable answer is already present in *ctx*."""
+        """Return True when a usable answer is already present in *ctx*.
+
+        Only ``final_boxed_answer`` is checked because ``llm_extracted_final_answer``
+        is the *full* LLM response text from FinalAnswerExtractor, which can be
+        non-empty even when no real answer was found (e.g. the LLM explains why
+        it cannot determine an answer).  Treating that as "valid" would cause the
+        fallback to be silently skipped.
+        """
         final_boxed = ctx.get("final_boxed_answer", "") or ""
         if final_boxed and final_boxed not in _PLACEHOLDER_ANSWERS:
-            return True
-
-        llm_extracted = ctx.get("llm_extracted_final_answer", "") or ""
-        if llm_extracted and llm_extracted.strip():
             return True
 
         return False

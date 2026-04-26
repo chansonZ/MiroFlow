@@ -117,11 +117,16 @@ class TestHasValidAnswer:
         ctx = _make_ctx(final_boxed_answer="42", llm_extracted_final_answer="")
         assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is True
 
-    def test_valid_llm_extracted(self):
+    def test_valid_llm_extracted_without_boxed_is_not_valid(self):
+        # llm_extracted_final_answer alone is no longer sufficient; only
+        # final_boxed_answer is authoritative.  An non-empty llm_extracted value
+        # with an empty/placeholder final_boxed should still trigger the fallback.
         ctx = _make_ctx(final_boxed_answer="", llm_extracted_final_answer="Paris")
-        assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is True
+        assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is False
 
     def test_both_valid_returns_true(self):
+        # When final_boxed_answer is a real answer, it is valid regardless of
+        # what llm_extracted_final_answer contains.
         ctx = _make_ctx(final_boxed_answer="42", llm_extracted_final_answer="forty-two")
         assert FallbackFinalAnswerGenerator._has_valid_answer(ctx) is True
 
@@ -146,15 +151,20 @@ class TestRunInternalNoop:
         assert result.get("final_boxed_answer", None) is None
 
     @pytest.mark.asyncio
-    async def test_skips_when_valid_llm_extracted(self):
-        proc = _make_processor()
+    async def test_runs_when_only_llm_extracted_set(self):
+        # Previously the fallback was skipped when llm_extracted_final_answer was
+        # non-empty even with a placeholder final_boxed_answer.  Now it must run.
+        proc = _make_processor(b_response="Fallback answer for incomplete task")
         ctx = _make_ctx(
-            final_boxed_answer="",
-            llm_extracted_final_answer="Some extracted answer",
-            message_history=[],
+            final_boxed_answer="No final answer generated.",
+            llm_extracted_final_answer="Some non-empty LLM explanation text",
+            task_description="What is the capital of France?",
+            message_history=[{"role": "assistant", "content": "I searched but ran out of turns"}],
         )
         result = await proc.run_internal(ctx)
-        proc.llm_client.create_message.assert_not_called()
+        # B-style fallback must have run and produced output
+        proc.llm_client.create_message.assert_called_once()
+        assert result.get("final_boxed_answer") == "Fallback answer for incomplete task"
 
 
 # ---------------------------------------------------------------------------
