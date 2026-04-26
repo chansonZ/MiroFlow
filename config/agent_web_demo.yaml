@@ -32,9 +32,16 @@ main_agent:
   input_processor:
     - ${input-message-generator}
 
+  # Output processors run after agent execution.
+  #
+  # To avoid "no output" cases in web_app, we add a max-turn fallback summary generator.
+  # It will generate a structured failure summary when:
+  #   - the agent reaches max_turns (reached_limit=true), or
+  #   - the final answer extraction yields no valid boxed answer.
   output_processor:
     - ${output-summary}
     - ${output-final-answer-extraction}
+    - ${output-exceed-max-turn-summary}
 
 # Input processor: generates initial message from task description
 input-message-generator:
@@ -48,6 +55,16 @@ output-summary:
 output-final-answer-extraction:
   type: FinalAnswerExtractor
   prompt: config/prompts/prompt_final_answer_extraction.yaml
+  llm:
+    _base_: config/llm/base_mirothinker.yaml
+    model_name: mirothinker-v1.5
+
+# Output processor: fallback summary when exceeded max turns / no valid final answer
+# Implementation is aligned with config/prompts/prompt_main_agent_benchmark.yaml
+# (basic_exceed_max_turn_summary_prompt) and miroflow/io_processor/exceed_max_turn_summary_generator.py
+output-exceed-max-turn-summary:
+  type: ExceedMaxTurnSummaryGenerator
+  prompt: config/prompts/prompt_main_agent_benchmark.yaml
   llm:
     _base_: config/llm/base_mirothinker.yaml
     model_name: mirothinker-v1.5
