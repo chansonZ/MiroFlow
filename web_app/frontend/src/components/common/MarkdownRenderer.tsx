@@ -60,6 +60,31 @@ function normalizeTableMarkdown(text: string): string {
     .join('\n');
 }
 
+const markdownComponents: Components = {
+  // remark-gfm's autolink-literals feature turns bare URLs (e.g. https://example.com)
+  // into <a> tags automatically.  In LLM output these URLs are usually meant as plain
+  // text citations, not navigable links.  We detect autolinks by comparing the href to
+  // the sole text child — when they match the user wrote a raw URL, not a Markdown link
+  // like [label](url).  In that case we render the URL as an unstyled <span> so it
+  // doesn't appear as a blue underlined hyperlink.  Explicit Markdown links are
+  // preserved as normal <a> elements.
+  a: ({ href, children }) => {
+    const textContent = typeof children === 'string'
+      ? children
+      : Array.isArray(children) && children.length === 1 && typeof children[0] === 'string'
+        ? children[0]
+        : null;
+    if (textContent !== null && textContent === href) {
+      return <span>{textContent}</span>;
+    }
+    return (
+      <a href={href} className="text-blue-600 hover:underline" target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  },
+};
+
 const tableComponents: Components = {
   table: ({ children }) => (
     <div className="overflow-x-auto my-4">
@@ -93,7 +118,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
   const normalizedContent = normalizeTableMarkdown(unescapeLiteralEscapes(content));
   return (
     <div className="markdown-content prose prose-sm max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={tableComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...markdownComponents, ...tableComponents }}>
         {normalizedContent}
       </ReactMarkdown>
     </div>
