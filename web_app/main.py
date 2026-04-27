@@ -4,6 +4,7 @@
 
 """MiroFlow Web API - FastAPI application entry point."""
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +19,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Load environment variables
 dotenv.load_dotenv()
+
+# Configure root logging so INFO messages from our modules are visible in the
+# server console.  uvicorn already sets up a handler, so we only set the level
+# here without adding extra handlers.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logging.getLogger("miroflow").setLevel(logging.INFO)
+logging.getLogger("web_app").setLevel(logging.INFO)
 
 from .api.dependencies import init_dependencies  # noqa: E402
 from .api.routes import configs, health, tasks, uploads  # noqa: E402

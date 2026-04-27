@@ -191,6 +191,42 @@ template:
       Do NOT include any tool call instructions, speculative filler, or vague summaries.
       Focus on factual, specific, and well-organized information.
 
+  exceed_max_turn_summary_prompt:
+    components:
+      - basic_exceed_max_turn_summary_prompt
+
+    basic_exceed_max_turn_summary_prompt: |
+      The task was not completed successfully. Do NOT call any tools. Provide a summary:
+
+      Failure type: [incomplete / blocked / misdirected / format_missed]
+        - incomplete: ran out of turns before finishing
+        - blocked: got stuck due to tool failure or missing information
+        - misdirected: went down the wrong path
+        - format_missed: found the answer but forgot to use \boxed{}
+      What happened: [describe the approach taken and why a final answer was not reached]
+      Useful findings: [list any facts, intermediate results, or conclusions discovered that should be reused]
+
+  fallback_final_answer_prompt:
+    components:
+      - basic_fallback_final_answer_prompt
+
+    required_context:
+      - task_description
+
+    basic_fallback_final_answer_prompt: |
+      Based on the full conversation above, please provide a comprehensive final answer to the original task.
+
+      The original task is:
+      "{{ task_description }}"
+
+      Instructions:
+      - Do NOT call any tools. Summarise based solely on the information already gathered in this conversation.
+      - Provide the most helpful and complete answer possible given what was discovered.
+      - If the task was fully completed, summarise the final result clearly.
+      - If the task was only partially completed, describe what was found and provide your best conclusion.
+      - Format your response in clear, user-readable Markdown.
+      - Focus on being informative and useful to the user rather than dwelling on technical failures.
+
   hint_generation_prompt:
     components:
       - basic_hint_generation_prompt

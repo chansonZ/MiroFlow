@@ -34,14 +34,18 @@ main_agent:
 
   # Output processors run after agent execution.
   #
-  # To avoid "no output" cases in web_app, we add a max-turn fallback summary generator.
-  # It will generate a structured failure summary when:
-  #   - the agent reaches max_turns (reached_limit=true), or
-  #   - the final answer extraction yields no valid boxed answer.
+  # Execution order is designed to guarantee at least one visible output in
+  # the web_app regardless of how the agent finished:
+  #   1. SummaryGenerator      – produces ctx.summary from message_history
+  #   2. FinalAnswerExtractor  – extracts ctx.final_boxed_answer from summary
+  #   3. ExceedMaxTurnSummaryGenerator – A-style fallback (failure post-mortem)
+  #   4. FallbackFinalAnswerGenerator  – B-style fallback (user-friendly summary),
+  #      then A-style if B fails; ensures final_boxed_answer is always non-empty.
   output_processor:
     - ${output-summary}
     - ${output-final-answer-extraction}
     - ${output-exceed-max-turn-summary}
+    - ${output-fallback-final-answer}
 
 # Input processor: generates initial message from task description
 input-message-generator:
@@ -60,11 +64,20 @@ output-final-answer-extraction:
     model_name: mirothinker-v1.5
 
 # Output processor: fallback summary when exceeded max turns / no valid final answer
-# Implementation is aligned with config/prompts/prompt_main_agent_benchmark.yaml
-# (basic_exceed_max_turn_summary_prompt) and miroflow/io_processor/exceed_max_turn_summary_generator.py
 output-exceed-max-turn-summary:
   type: ExceedMaxTurnSummaryGenerator
-  prompt: config/prompts/prompt_main_agent_benchmark.yaml
+  prompt: config/prompts/prompt_main_agent.yaml
+  llm:
+    _base_: config/llm/base_mirothinker.yaml
+    model_name: mirothinker-v1.5
+
+# Output processor: ultimate fallback guaranteeing a visible answer in web_app.
+# Tries B-style (user-friendly final-answer summary) first, then A-style
+# (failure post-mortem) as last resort.  Writes result to final_boxed_answer
+# so it maps to Task.final_answer without any additional plumbing changes.
+output-fallback-final-answer:
+  type: FallbackFinalAnswerGenerator
+  prompt: config/prompts/prompt_main_agent.yaml
   llm:
     _base_: config/llm/base_mirothinker.yaml
     model_name: mirothinker-v1.5

@@ -26,6 +26,7 @@ class BaseAgent(ABC):
     """Agent base class"""
 
     USE_PROPAGATE_MODULE_CONFIGS = ("llm", "tools", "prompt")
+    USE_TOOLS: bool = True  # Set to False in subclasses that never call external tools
     _instance_counters = {}
 
     def __init_subclass__(cls, **kwargs):
@@ -72,12 +73,20 @@ class BaseAgent(ABC):
         self.prompt_manager = PromptManager(config_path=self.cfg.get("prompt"))
         self.sub_agents = self.cfg.get("sub_agents")
 
-        # Parse tool_blacklist from config
-        tool_blacklist = self._parse_tool_blacklist(self.cfg.get("tool_blacklist"))
-        self.tool_manager = ToolManager(
-            cfg=self.cfg.get("tools"), tool_blacklist=tool_blacklist
-        )
-        self.skill_manager = SkillManager(skill_dirs=self.cfg.get("skills"))
+        if self.USE_TOOLS:
+            # Parse tool_blacklist from config
+            tool_blacklist = self._parse_tool_blacklist(self.cfg.get("tool_blacklist"))
+            self.tool_manager = ToolManager(
+                cfg=self.cfg.get("tools"), tool_blacklist=tool_blacklist
+            )
+            self.skill_manager = SkillManager(skill_dirs=self.cfg.get("skills"))
+        else:
+            self.tool_manager = None
+            self.skill_manager = None
+        # Populated by post_initialize → init_tool_definitions (or set to empty
+        # lists immediately when USE_TOOLS is False to avoid AttributeError).
+        self.tool_definitions: list = []
+        self.mcp_server_definitions: list | str = []
 
     def _parse_tool_blacklist(self, blacklist_cfg) -> set:
         """
@@ -129,7 +138,8 @@ class BaseAgent(ABC):
             )
 
     async def post_initialize(self):
-        await self.init_tool_definitions()
+        if self.USE_TOOLS:
+            await self.init_tool_definitions()
 
     @staticmethod
     def get_mcp_server_definitions_from_tool_definitions(
