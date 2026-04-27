@@ -369,7 +369,7 @@ export default function App() {
               {/* Running state: Show all messages with thinking expanded */}
               {(currentStatus?.status === 'running' || currentStatus?.status === 'pending') && (
                 <>
-                  {messages.map((msg, index) => (
+                  {messages.filter(msg => msg.role !== 'user').map((msg, index) => (
                     <MessageBubble key={index} role={msg.role} content={msg.content} isRunning={true} />
                   ))}
                   <div className="flex items-start gap-4">
@@ -647,7 +647,7 @@ function SummaryHeader() {
   );
 }
 
-// Completed view - handles all parsing and displays thinking trajectory + summary
+// Completed view - handles all parsing and displays tool steps always visible, then summary
 function CompletedView({
   messages,
   finalAnswer,
@@ -657,22 +657,9 @@ function CompletedView({
   finalAnswer?: string;
   summary?: string;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  // Check if there's any content to show in the trajectory
-  const hasThinkingContent = messages.some(msg => {
-    if (msg.role === 'user') return false;
-    const parsed = parseMessageContent(msg.content);
-    // Show trajectory if there's any thinking, tool calls, or text content
-    return parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
-  });
-
   // Parse final answer and summary
   const parsedFinalAnswer = finalAnswer ? parseMessageContent(finalAnswer) : null;
   const parsedSummary = summary ? parseMessageContent(summary) : null;
-
-  // Check if final answer or summary has thinking
-  const hasThinkingInAnswer = !!parsedFinalAnswer?.thinking || !!parsedSummary?.thinking;
 
   // Get clean content without think tags
   const cleanFinalAnswer = parsedFinalAnswer?.text || '';
@@ -680,65 +667,46 @@ function CompletedView({
 
   return (
     <>
-      {/* Thinking Trajectory - collapsed by default, transparent/borderless style */}
-      {(hasThinkingContent || hasThinkingInAnswer) && (
-        <div>
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
-          >
-            <List className="w-4 h-4" />
-            <span>{isExpanded ? 'Hide' : 'Show'} thinking trajectory</span>
-            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-          </button>
-          {isExpanded && (
-            <div className="space-y-6 pt-4">
-              {/* Render each message with full ThinkingSection and ToolCallDisplay */}
-              {messages.map((msg, index) => {
-                if (msg.role === 'user') return null;
-                const parsed = parseMessageContent(msg.content);
-                // Show ALL messages - don't filter out those without thinking/toolCalls
-                // This ensures full trace is visible exactly as during running state
-                const hasAnyContent = parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
-                if (!hasAnyContent) return null;
+      {/* Process steps - always visible after completion */}
+      <div className="space-y-4">
+        {messages.map((msg, index) => {
+          if (msg.role === 'user') return null;
+          const parsed = parseMessageContent(msg.content);
+          const hasAnyContent = parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
+          if (!hasAnyContent) return null;
 
-                return (
-                  <div key={index} className="space-y-3">
-                    {/* Thinking section - same style as running state */}
-                    {parsed.thinking && (
-                      <ThinkingSection content={parsed.thinking} defaultExpanded={false} />
-                    )}
-
-                    {/* Tool calls - same style as running state */}
-                    {parsed.toolCalls.length > 0 && (
-                      <div className="space-y-3">
-                        {parsed.toolCalls.map((tool, idx) => (
-                          <ToolCallDisplay key={idx} tool={tool} />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Text content - show any non-thinking, non-tool text */}
-                    {parsed.text && (
-                      <SmartTextContent content={parsed.text} />
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Thinking from final answer */}
-              {parsedFinalAnswer?.thinking && (
-                <ThinkingSection content={parsedFinalAnswer.thinking} defaultExpanded={false} />
+          return (
+            <div key={index} className="space-y-3">
+              {/* Thinking section - collapsed by default */}
+              {parsed.thinking && (
+                <ThinkingSection content={parsed.thinking} defaultExpanded={false} />
               )}
 
-              {/* Thinking from summary */}
-              {parsedSummary?.thinking && (
-                <ThinkingSection content={parsedSummary.thinking} defaultExpanded={false} />
+              {/* Tool calls (search, browse, etc.) - always shown */}
+              {parsed.toolCalls.length > 0 && (
+                <div className="space-y-3">
+                  {parsed.toolCalls.map((tool, idx) => (
+                    <ToolCallDisplay key={idx} tool={tool} />
+                  ))}
+                </div>
+              )}
+
+              {/* Text content */}
+              {parsed.text && (
+                <SmartTextContent content={parsed.text} />
               )}
             </div>
-          )}
-        </div>
-      )}
+          );
+        })}
+
+        {/* Thinking from final answer / summary */}
+        {parsedFinalAnswer?.thinking && (
+          <ThinkingSection content={parsedFinalAnswer.thinking} defaultExpanded={false} />
+        )}
+        {parsedSummary?.thinking && (
+          <ThinkingSection content={parsedSummary.thinking} defaultExpanded={false} />
+        )}
+      </div>
 
       {/* Summary Header */}
       <SummaryHeader />
