@@ -7,6 +7,18 @@ interface MarkdownRendererProps {
 }
 
 /**
+ * LLMs sometimes emit escape sequences as literal two-character strings
+ * (e.g. backslash + "n") rather than real control characters.  Convert the
+ * most common ones so that downstream markdown parsing works correctly.
+ */
+function unescapeLiteralEscapes(text: string): string {
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t');
+}
+
+/**
  * Normalizes markdown table content that may arrive with all rows on a single
  * line (a common LLM output quirk).  When the alignment row (`| :--- |`) is
  * detected inside a longer line, each `| … |` row segment is split onto its
@@ -78,7 +90,7 @@ const tableComponents: Components = {
 };
 
 export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
-  const normalizedContent = normalizeTableMarkdown(content);
+  const normalizedContent = normalizeTableMarkdown(unescapeLiteralEscapes(content));
   return (
     <div className="markdown-content prose prose-sm max-w-none">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={tableComponents}>
