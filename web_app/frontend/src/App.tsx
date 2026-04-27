@@ -751,7 +751,7 @@ function CompletedView({
       )}
 
       {/* Detailed Report - parsed to remove think tags */}
-      {cleanSummary && (
+      {cleanSummary && cleanSummary !== cleanFinalAnswer && (
         <div className="prose prose-sm max-w-none text-gray-800">
           <MarkdownRenderer content={cleanSummary} />
         </div>
