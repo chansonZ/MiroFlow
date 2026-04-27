@@ -19,6 +19,10 @@ class BaseIOProcessor(BaseAgent):
     IO processors are used for:
     - Input processing: generating prompts, handling user input
     - Output processing: generating summaries, extracting final answers
+
+    IO processors do not call external tools, so MCP/tool initialization is
+    skipped automatically (``USE_TOOLS = False``).  Individual subclasses that
+    exceptionally need tool access can override ``USE_TOOLS = True``.
     """
 
-    pass
+    USE_TOOLS: bool = False
