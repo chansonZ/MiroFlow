@@ -99,8 +99,12 @@ async def get_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # If running, get progress from executor
-    if task.status == "running":
+    # Only merge live progress when the task is genuinely still running in the
+    # executor.  Without this guard a page refresh that arrives just after the
+    # task writes "completed" to disk (but before _running_tasks is cleaned up,
+    # or while the session file transiently still says "running") would
+    # overwrite final_answer / messages / status with empty progress data.
+    if task.status == "running" and task_executor.is_task_running(task_id):
         progress = task_executor.get_task_progress(task_id)
         task = session_manager.update_task(task_id, progress)
         if task is None:
@@ -123,7 +127,7 @@ async def get_task_status(
     progress: dict = {}
     stored_messages: list = []
 
-    if task.status == "running":
+    if task.status == "running" and task_executor.is_task_running(task_id):
         progress = task_executor.get_task_progress(task_id)
         # Update session with progress
         session_manager.update_task(
