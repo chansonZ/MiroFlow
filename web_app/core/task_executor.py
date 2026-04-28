@@ -5,8 +5,10 @@
 """Background task execution for agent runs."""
 
 import asyncio
+import json
 import logging
 import os
+import re
 import threading
 import traceback
 import uuid
@@ -134,8 +136,8 @@ class TaskExecutor:
             # Run agent
             result = await agent.run(ctx)
 
-            # Get final message history before cleanup
-            final_messages = self._get_all_messages_from_tracer(tracer)
+            # Get final message history and trajectory before cleanup
+            final_data = self._get_all_messages_from_tracer(tracer)
 
             # Update session with results and full message history
             self.session_manager.update_task(
@@ -144,7 +146,8 @@ class TaskExecutor:
                     "status": "completed",
                     "final_answer": result.get("final_boxed_answer", ""),
                     "summary": result.get("summary", ""),
-                    "messages": final_messages,
+                    "messages": final_data["messages"],
+                    "trajectory": final_data["trajectory"],
                 },
             )
 
@@ -169,8 +172,8 @@ class TaskExecutor:
             if task_id in self._task_tracers:
                 del self._task_tracers[task_id]
 
-    def _get_all_messages_from_tracer(self, tracer: Any) -> list[dict]:
-        """Extract all messages from tracer for persistence."""
+    def _get_all_messages_from_tracer(self, tracer: Any) -> dict[str, Any]:
+        """Extract all messages and trajectory from tracer for persistence."""
         try:
             with tracer._data_lock:
                 for key, log_file in tracer._active_tasks.items():
@@ -182,10 +185,13 @@ class TaskExecutor:
                             else state.get("state", {})
                         )
                         message_history = state_data.get("message_history", [])
-                        return self._format_messages(message_history)
+                        return {
+                            "messages": self._format_messages(message_history),
+                            "trajectory": self._build_trajectory(message_history),
+                        }
         except Exception:
             logger.debug("Failed to retrieve task messages", exc_info=True)
-        return []
+        return {"messages": [], "trajectory": []}
 
     def get_task_progress(self, task_id: str) -> dict[str, Any]:
         """Get current progress from tracer."""
@@ -196,6 +202,7 @@ class TaskExecutor:
                 "step_count": 0,
                 "recent_logs": [],
                 "messages": [],
+                "trajectory": [],
             }
 
         try:
@@ -225,16 +232,20 @@ class TaskExecutor:
                         self._format_recent_logs(step_logs[-30:]) if step_logs else []
                     )
 
+                    # Build structured trajectory from message history
+                    trajectory = self._build_trajectory(message_history)
+
                     return {
                         "current_turn": current_turn,
                         "step_count": len(step_logs),
                         "recent_logs": recent_logs,
                         "messages": messages,
+                        "trajectory": trajectory,
                     }
         except Exception:
             logger.debug("Failed to retrieve task progress", exc_info=True)
 
-        return {"current_turn": 0, "step_count": 0, "recent_logs": [], "messages": []}
+        return {"current_turn": 0, "step_count": 0, "recent_logs": [], "messages": [], "trajectory": []}
 
     def _format_recent_logs(self, logs: list[dict]) -> list[dict]:
         """Format and filter logs to show relevant tool call and LLM information."""
@@ -354,6 +365,314 @@ class TaskExecutor:
         if isinstance(output, str) and len(output) > 1000:
             return output[:1000] + "... (truncated)"
         return output
+
+    # ------------------------------------------------------------------
+    # Trajectory building
+    # ------------------------------------------------------------------
+
+    def _build_trajectory(self, message_history: list[dict]) -> list[dict]:
+        """Build a structured trajectory from the raw message_history.
+
+        Supports both:
+        - Native OpenAI tool_calls (role=assistant with tool_calls list, role=tool)
+        - MCP XML format (<use_mcp_tool>...</use_mcp_tool> / <tool_result>)
+        """
+        events: list[dict] = []
+        counter = [0]
+
+        def new_id(prefix: str = "evt") -> str:
+            counter[0] += 1
+            return f"{prefix}_{counter[0]}"
+
+        # Pending tool calls awaiting results
+        native_pending: dict[str, dict] = {}  # call_id -> event
+        mcp_pending: list[dict] = []  # ordered, matches user messages in sequence
+
+        # Context for assigning parent_id to reasoning events
+        last_completed_type: str | None = None  # "search" | "read"
+        last_search_id: str | None = None
+        last_read_id: str | None = None
+
+        for msg in message_history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "assistant":
+                # Determine reasoning parent from last completed tool
+                if last_completed_type == "search":
+                    reasoning_parent = last_search_id
+                elif last_completed_type == "read":
+                    reasoning_parent = last_read_id
+                else:
+                    reasoning_parent = None
+
+                # Extract <think> block
+                if isinstance(content, str):
+                    think_match = re.search(
+                        r"<think>([\s\S]*?)</think>", content, re.IGNORECASE
+                    )
+                    if think_match:
+                        reasoning_text = think_match.group(1).strip()
+                        if reasoning_text:
+                            evt_id = new_id("r")
+                            events.append(
+                                {
+                                    "id": evt_id,
+                                    "type": "reasoning",
+                                    "text": reasoning_text,
+                                    "parent_id": reasoning_parent,
+                                }
+                            )
+
+                # Handle native OpenAI tool_calls
+                native_tool_calls = msg.get("tool_calls", [])
+                if native_tool_calls and isinstance(native_tool_calls, list):
+                    for tc in native_tool_calls:
+                        if not isinstance(tc, dict):
+                            continue
+                        call_id = tc.get("id", new_id("call"))
+                        fn = tc.get("function", {})
+                        tool_name = fn.get("name", "") if isinstance(fn, dict) else str(fn)
+                        args_str = fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else {}
+                        except Exception:
+                            args = {"raw": str(args_str)[:500]}
+
+                        evt_id = new_id("t")
+                        evt = self._make_tool_event(evt_id, tool_name, args, last_search_id)
+                        events.append(evt)
+                        native_pending[call_id] = evt
+                        if evt["type"] == "search":
+                            last_search_id = evt_id
+
+                # Handle MCP XML tool calls
+                if isinstance(content, str) and "<use_mcp_tool" in content:
+                    mcp_pattern = re.compile(
+                        r"<use_mcp_tool[^>]*>.*?"
+                        r"(?:<server_name[^>]*>(.*?)</server_name>.*?)?"
+                        r"<tool_name[^>]*>(.*?)</tool_name>.*?"
+                        r"<arguments[^>]*>([\s\S]*?)</arguments>.*?"
+                        r"</use_mcp_tool>",
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    for match in mcp_pattern.finditer(content):
+                        tool_name = (match.group(2) or "").strip()
+                        args_str = (match.group(3) or "").strip()
+                        try:
+                            args = json.loads(args_str) if args_str else {}
+                        except Exception:
+                            args = {"raw": args_str[:500]}
+
+                        evt_id = new_id("t")
+                        evt = self._make_tool_event(evt_id, tool_name, args, last_search_id)
+                        events.append(evt)
+                        mcp_pending.append(evt)
+                        if evt["type"] == "search":
+                            last_search_id = evt_id
+
+            elif role == "tool":
+                # Native tool result message
+                call_id = msg.get("tool_call_id", "")
+                raw_content = content
+                if isinstance(raw_content, list):
+                    parts = []
+                    for item in raw_content:
+                        if isinstance(item, dict):
+                            parts.append(
+                                item.get("text") or item.get("content") or ""
+                            )
+                        else:
+                            parts.append(str(item))
+                    raw_content = "\n".join(parts)
+                elif not isinstance(raw_content, str):
+                    raw_content = str(raw_content)
+
+                matched_evt = native_pending.get(call_id)
+                if matched_evt:
+                    self._apply_result_to_event(matched_evt, raw_content)
+                    if matched_evt["type"] == "search":
+                        last_completed_type = "search"
+                        last_search_id = matched_evt["id"]
+                    elif matched_evt["type"] == "read":
+                        last_completed_type = "read"
+                        last_read_id = matched_evt["id"]
+
+            elif role == "user":
+                # Collect text from user message (tool results in MCP / text protocol)
+                texts: list[str] = []
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict):
+                            t = item.get("text") or item.get("content") or ""
+                            if t:
+                                texts.append(str(t))
+                        elif isinstance(item, str):
+                            texts.append(item)
+
+                full_text = "\n".join(texts)
+                if not full_text:
+                    continue
+
+                # Try to match <tool_result>name:\ncontent</tool_result> blocks
+                tool_result_re = re.compile(
+                    r"<tool_result>\s*(\S[^:\n]*?):\s*([\s\S]*?)</tool_result>",
+                    re.IGNORECASE,
+                )
+                tool_result_matches = list(tool_result_re.finditer(full_text))
+
+                if tool_result_matches:
+                    for rm in tool_result_matches:
+                        tool_name_in_result = rm.group(1).strip()
+                        result_text = rm.group(2).strip()
+
+                        # Match to first unresolved MCP pending call with same tool_name
+                        matched = None
+                        for evt in mcp_pending:
+                            if (
+                                evt.get("tool_name") == tool_name_in_result
+                                and not evt.get("_resolved")
+                            ):
+                                matched = evt
+                                break
+                        if not matched:
+                            # Fallback: any first unresolved
+                            for evt in mcp_pending:
+                                if not evt.get("_resolved"):
+                                    matched = evt
+                                    break
+
+                        if matched:
+                            matched["_resolved"] = True
+                            self._apply_result_to_event(matched, result_text)
+                            if matched["type"] == "search":
+                                last_completed_type = "search"
+                                last_search_id = matched["id"]
+                            elif matched["type"] == "read":
+                                last_completed_type = "read"
+                                last_read_id = matched["id"]
+
+                elif mcp_pending:
+                    # text_protocol: whole content is the tool result for the first pending call
+                    for evt in mcp_pending:
+                        if not evt.get("_resolved"):
+                            evt["_resolved"] = True
+                            self._apply_result_to_event(evt, full_text)
+                            if evt["type"] == "search":
+                                last_completed_type = "search"
+                                last_search_id = evt["id"]
+                            elif evt["type"] == "read":
+                                last_completed_type = "read"
+                                last_read_id = evt["id"]
+                            break
+
+        # Remove internal tracking keys before returning
+        for evt in events:
+            evt.pop("_resolved", None)
+
+        return events
+
+    def _make_tool_event(
+        self,
+        evt_id: str,
+        tool_name: str,
+        args: dict,
+        last_search_id: str | None,
+    ) -> dict:
+        """Create a trajectory event dict for a tool call."""
+        tool_lower = tool_name.lower()
+
+        if any(
+            x in tool_lower
+            for x in ("search", "google", "serper", "bing", "ddg", "tavily", "serpapi")
+        ):
+            query = str(
+                args.get("query")
+                or args.get("q")
+                or args.get("search_query")
+                or args.get("keyword")
+                or ""
+            )
+            return {
+                "id": evt_id,
+                "type": "search",
+                "query": query,
+                "results": [],
+                "results_count": 0,
+                "parent_id": None,
+                "tool_name": tool_name,
+                "args": args,
+            }
+
+        if any(
+            x in tool_lower
+            for x in ("scrape", "read", "fetch", "browse", "webpage", "url", "crawl", "visit")
+        ):
+            url = str(
+                args.get("url")
+                or args.get("webpage_url")
+                or args.get("link")
+                or args.get("uri")
+                or ""
+            )
+            return {
+                "id": evt_id,
+                "type": "read",
+                "url": url,
+                "parent_id": last_search_id,
+                "tool_name": tool_name,
+                "args": args,
+            }
+
+        return {
+            "id": evt_id,
+            "type": "tool_call",
+            "tool_name": tool_name,
+            "args": args,
+            "parent_id": last_search_id,
+        }
+
+    def _apply_result_to_event(self, evt: dict, result_str: str) -> None:
+        """Enrich a trajectory event with tool result data (in-place)."""
+        if evt.get("type") == "search":
+            results = self._parse_search_results(result_str)
+            if results:
+                evt["results"] = results
+                evt["results_count"] = len(results)
+
+    def _parse_search_results(self, result_str: str) -> list[dict]:
+        """Parse a JSON search-result string into a list of result dicts."""
+        if not result_str:
+            return []
+        try:
+            data = json.loads(result_str)
+            organic: list | None = None
+            if isinstance(data, dict):
+                organic = (
+                    data.get("organic")
+                    or data.get("organic_results")
+                    or data.get("results")
+                )
+            elif isinstance(data, list) and data and isinstance(data[0], dict):
+                if data[0].get("link") or data[0].get("url"):
+                    organic = data
+
+            if organic and isinstance(organic, list):
+                return [
+                    {
+                        "title": r.get("title"),
+                        "url": r.get("link") or r.get("url") or "",
+                        "snippet": r.get("snippet") or r.get("description"),
+                        "favicon": r.get("favicon"),
+                    }
+                    for r in organic[:10]
+                    if r.get("link") or r.get("url")
+                ]
+        except Exception:
+            pass
+        return []
 
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a running task (best effort - marks as cancelled)."""

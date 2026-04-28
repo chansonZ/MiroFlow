@@ -17,6 +17,7 @@ from ...models.task import (
     TaskListResponse,
     TaskResponse,
     TaskStatusUpdate,
+    TrajectoryEvent,
 )
 from ..dependencies import get_session_manager, get_task_executor
 
@@ -122,6 +123,7 @@ async def get_task_status(
 
     progress: dict = {}
     stored_messages: list = []
+    stored_trajectory: list = []
 
     if task.status == "running":
         progress = task_executor.get_task_progress(task_id)
@@ -138,10 +140,15 @@ async def get_task_status(
         session_data = session_manager._read_session(task_id)
         if session_data:
             stored_messages = session_data.get("messages", [])
+            stored_trajectory = session_data.get("trajectory", [])
 
     # Convert messages to Message objects - use progress messages for running, stored for completed
     raw_messages = progress.get("messages", []) if progress else stored_messages
     messages = [Message(**m) for m in raw_messages]
+
+    # Build trajectory list
+    raw_trajectory = progress.get("trajectory", []) if progress else stored_trajectory
+    trajectory = [TrajectoryEvent(**e) for e in raw_trajectory if isinstance(e, dict)]
 
     return TaskStatusUpdate(
         id=task.id,
@@ -153,6 +160,7 @@ async def get_task_status(
         final_answer=task.final_answer,
         summary=task.summary,
         error_message=task.error_message,
+        trajectory=trajectory,
     )
 
 
