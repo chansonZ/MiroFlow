@@ -339,6 +339,15 @@ class OpenRouterClient(LLMClientBase):
             }
         logger.debug(f"LLM Response: {assistant_response_text}")
 
+        # Extract dedicated reasoning field (e.g., Kimi / DeepSeek via OpenRouter)
+        # These models return reasoning separately rather than inside <think> tags.
+        message = llm_response.choices[0].message
+        reasoning_field = getattr(message, "reasoning", None) or getattr(
+            message, "reasoning_content", None
+        )
+        if reasoning_field and isinstance(reasoning_field, str) and reasoning_field.strip():
+            assistant_message["reasoning"] = reasoning_field.strip()
+
         return assistant_response_text, False, assistant_message
 
     def extract_tool_calls_info(self, llm_response, assistant_response_text):

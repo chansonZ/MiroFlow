@@ -349,12 +349,21 @@ class TaskExecutor:
                 content = str(content)
 
             # Don't truncate - preserve full content for thinking and tool results
-            formatted.append(
-                {
-                    "role": role,
-                    "content": content,
-                }
-            )
+            formatted_msg: dict = {
+                "role": role,
+                "content": content,
+            }
+
+            # For assistant messages, also include dedicated reasoning as <think> block
+            # so the frontend fallback (parseMessageContent) can render it.
+            if role == "assistant":
+                dedicated = msg.get("reasoning") or msg.get("reasoning_content")
+                if dedicated and isinstance(dedicated, str) and dedicated.strip():
+                    formatted_msg["content"] = (
+                        f"<think>{dedicated.strip()}</think>\n{content}"
+                    )
+
+            formatted.append(formatted_msg)
 
         return formatted
 
@@ -406,7 +415,8 @@ class TaskExecutor:
                 else:
                     reasoning_parent = None
 
-                # Extract <think> block
+                # Extract <think> block from content string
+                think_extracted = False
                 if isinstance(content, str):
                     think_match = re.search(
                         r"<think>([\s\S]*?)</think>", content, re.IGNORECASE
@@ -423,6 +433,28 @@ class TaskExecutor:
                                     "parent_id": reasoning_parent,
                                 }
                             )
+                            think_extracted = True
+
+                # Also check dedicated reasoning field (e.g., Kimi/DeepSeek via OpenRouter)
+                # saved by process_llm_response as assistant_message["reasoning"]
+                if not think_extracted:
+                    dedicated_reasoning = msg.get("reasoning") or msg.get(
+                        "reasoning_content"
+                    )
+                    if (
+                        dedicated_reasoning
+                        and isinstance(dedicated_reasoning, str)
+                        and dedicated_reasoning.strip()
+                    ):
+                        evt_id = new_id("r")
+                        events.append(
+                            {
+                                "id": evt_id,
+                                "type": "reasoning",
+                                "text": dedicated_reasoning.strip(),
+                                "parent_id": reasoning_parent,
+                            }
+                        )
 
                 # Handle native OpenAI tool_calls
                 native_tool_calls = msg.get("tool_calls", [])
