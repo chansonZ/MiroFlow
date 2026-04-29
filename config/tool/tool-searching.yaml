@@ -6,7 +6,13 @@ args:
 env:
 # Search API keys - these values will be loaded from the .env file at runtime
   SERPER_API_KEY: "${oc.env:SERPER_API_KEY}"
+  SERPER_BASE_URL: "${oc.env:SERPER_BASE_URL,https://google.serper.dev}"
   JINA_API_KEY: "${oc.env:JINA_API_KEY}"
+  JINA_BASE_URL: "${oc.env:JINA_BASE_URL,https://r.jina.ai}"
   REMOVE_SNIPPETS: "${oc.env:REMOVE_SNIPPETS,false}"
   REMOVE_KNOWLEDGE_GRAPH: "${oc.env:REMOVE_KNOWLEDGE_GRAPH,false}"
   REMOVE_ANSWER_BOX: "${oc.env:REMOVE_ANSWER_BOX,false}"
+# LLM keys for the search_and_scrape composite tool (optional - tool degrades gracefully if unset)
+  SUMMARY_LLM_BASE_URL: "${oc.env:SUMMARY_LLM_BASE_URL,}"
+  SUMMARY_LLM_MODEL_NAME: "${oc.env:SUMMARY_LLM_MODEL_NAME,}"
+  SUMMARY_LLM_API_KEY: "${oc.env:SUMMARY_LLM_API_KEY,}"

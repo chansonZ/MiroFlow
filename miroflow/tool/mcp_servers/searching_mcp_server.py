@@ -14,6 +14,13 @@ from mcp import ClientSession, StdioServerParameters  # (already imported in con
 import wikipedia
 import asyncio
 from .utils.smart_request import smart_request, request_to_json
+from .jina_scrape import (
+    _is_huggingface_dataset_or_space_url,
+    extract_info_with_llm,
+    scrape_url_with_jina,
+    scrape_url_with_python,
+    SUMMARY_LLM_MODEL_NAME,
+)
 
 
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
@@ -694,6 +701,134 @@ async def scrape_website(url: str) -> str:
             "JINA_BASE_URL": JINA_BASE_URL,
         },
     )
+
+
+@mcp.tool()
+async def search_and_scrape(
+    q: str,
+    info_to_extract: str,
+    num_results: int = 3,
+    gl: str = "us",
+    hl: str = "en",
+    location: str = None,
+    num: int = 10,
+    tbs: str = None,
+    page: int = 1,
+) -> str:
+    """Perform a Google search and immediately scrape the top results to extract relevant information.
+    Use this composite tool instead of calling google_search and scrape_and_extract_info separately
+    when max_turns are limited or when you know you will need to read the actual page content.
+
+    Args:
+        q: Search query string.
+        info_to_extract: The specific information to extract from each scraped page (usually a question or topic).
+        num_results: Number of top organic search results to scrape (default: 3, max: 5).
+        gl: Country context for search (e.g., 'us' for United States, 'cn' for China). Default is 'us'.
+        hl: Google interface language (e.g., 'en' for English, 'zh' for Chinese). Default is 'en'.
+        location: City-level location for search results (e.g., 'New York, United States').
+        num: Total number of search results to retrieve from Google (default: 10).
+        tbs: Time-based search filter ('qdr:h' past hour, 'qdr:d' past day, 'qdr:w' past week, 'qdr:m' past month, 'qdr:y' past year).
+        page: Page number of search results (default: 1).
+
+    Returns:
+        A combined result containing the Google search overview followed by extracted content from each scraped page.
+    """
+    # Step 1: Perform Google search
+    search_result_str = await google_search(
+        q=q, gl=gl, hl=hl, location=location, num=num, tbs=tbs, page=page
+    )
+
+    if search_result_str.startswith("[ERROR]"):
+        return search_result_str
+
+    # Step 2: Parse top-N URLs from organic results
+    urls_to_scrape = []
+    snippets_by_url = {}
+    try:
+        search_data = json.loads(search_result_str)
+        organic = search_data.get("organic", [])
+        capped = min(num_results, 5)
+        for item in organic[:capped]:
+            url = item.get("link", "")
+            if url and not _is_huggingface_dataset_or_space_url(url):
+                urls_to_scrape.append(url)
+                snippets_by_url[url] = item.get("snippet", "")
+    except Exception:
+        # If we cannot parse the search results, return them as-is
+        return search_result_str
+
+    if not urls_to_scrape:
+        return search_result_str
+
+    # Step 3: Concurrently scrape all URLs
+    async def _scrape(url: str) -> dict:
+        result = await scrape_url_with_jina(url)
+        if not result["success"]:
+            result = await scrape_url_with_python(url)
+        return {"url": url, "scrape_result": result}
+
+    scrape_outputs = await asyncio.gather(
+        *[_scrape(url) for url in urls_to_scrape], return_exceptions=True
+    )
+
+    # Step 4: Concurrently extract information with LLM (if configured)
+    use_llm = bool(SUMMARY_LLM_MODEL_NAME)
+
+    async def _extract(scrape_output) -> dict:
+        if isinstance(scrape_output, Exception):
+            return {"url": "unknown", "success": False, "info": "", "error": str(scrape_output)}
+        url = scrape_output["url"]
+        sr = scrape_output["scrape_result"]
+        if not sr["success"] or not sr.get("content"):
+            # Fall back to snippet from search results
+            snippet = snippets_by_url.get(url, "")
+            return {
+                "url": url,
+                "success": False,
+                "info": f"[Scraping failed: {sr.get('error', '')}]" + (f"\nSearch snippet: {snippet}" if snippet else ""),
+                "error": sr.get("error", ""),
+            }
+        if use_llm:
+            extracted = await extract_info_with_llm(
+                url=url,
+                content=sr["content"],
+                info_to_extract=info_to_extract,
+                model=SUMMARY_LLM_MODEL_NAME,
+                max_tokens=4096,
+            )
+            if extracted["success"]:
+                return {"url": url, "success": True, "info": extracted["extracted_info"], "error": ""}
+            # LLM extraction failed — fall back to raw content preview
+            fallback = sr["content"][:4096]
+            return {"url": url, "success": False, "info": fallback, "error": extracted["error"]}
+        else:
+            # No LLM configured — return raw content preview
+            return {"url": url, "success": True, "info": sr["content"][:4096], "error": ""}
+
+    extracted_results = await asyncio.gather(
+        *[_extract(o) for o in scrape_outputs], return_exceptions=True
+    )
+
+    # Step 5: Build combined output
+    output_parts = [
+        f"## Google Search Results for: {q}",
+        "",
+        search_result_str,
+        "",
+        f"## Scraped Content from Top {len(urls_to_scrape)} Result(s)",
+        "",
+    ]
+
+    for i, result in enumerate(extracted_results, 1):
+        if isinstance(result, Exception):
+            output_parts.append(f"### Page {i}: Error\n{result}\n")
+            continue
+        url = result["url"]
+        output_parts.append(f"### Page {i}: {url}")
+        output_parts.append(result["info"] if result["info"] else "[No content extracted]")
+        output_parts.append("")
+
+    return "\n".join(output_parts)
 
 
 if __name__ == "__main__":
