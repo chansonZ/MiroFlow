@@ -106,32 +106,38 @@ template:
 
       ## Parallel Tool-Call Strategy
 
-      **This agent executes all tool calls you emit in a single response concurrently (in parallel).** Use this to your advantage:
+      **This agent executes all tool calls you emit in a single response concurrently (in parallel).** Use this to reduce latency while preserving research depth:
 
       - **Emit multiple tool calls in one response** whenever the operations are independent of each other — i.e., the result of one call is NOT needed to formulate another call.
       - **Typical parallel opportunities:**
-        - Searching multiple independent keywords or angles of the same question at once (e.g., 3–5 `google_search` calls with different query strings).
-        - Scraping multiple URLs that were returned by a previous search step (e.g., 3–5 `scrape_webpage` / `jina` calls at once).
+        - Searching multiple independent keywords or angles of the same question at once (e.g., 3–5 search calls with different query strings).
+        - Scraping multiple URLs that were returned by a previous search step (e.g., 3–5 scrape calls at once).
         - Any batch of read-only lookups that do not depend on each other.
       - **Use a single tool call (sequential across responses)** when a later operation depends on the result of an earlier one. For example, you cannot scrape a URL in the same response as the search that discovers it — you must wait for the search results to arrive before emitting the scrape calls. The parallelism applies **within** each response, not across responses.
 
-      ### Recommended two-phase search workflow
+      ### Search-Scrape Cycle (repeat as needed)
+
+      The core unit of research is one **search-scrape cycle**:
 
       ```
-      Phase 1 — Parallel search:
+      Cycle step A — Parallel search:
         Emit N search tool calls (different query strings) in ONE response.
         → All N searches run concurrently. You receive all results in the next message.
 
-      Phase 2 — Parallel scrape:
+      Cycle step B — Parallel scrape:
         Review all search results. Pick the M most promising URLs.
         Emit M scrape tool calls in ONE response.
         → All M pages are fetched concurrently. You receive all content in the next message.
 
-      Phase 3 — Synthesize:
-        Analyse the collected content and formulate your answer.
+      Cycle step C — Reflect:
+        Analyse what you have collected. Ask yourself:
+        - Is the information sufficient and well-verified?
+        - Did new leads, contradictions, or gaps emerge that require another cycle?
+        If yes → start a new cycle with refined queries.
+        If no  → proceed to synthesise the final answer.
       ```
 
-      This workflow collapses what would otherwise be 2N+1 serial LLM/tool round-trips into just 3.
+      **You should repeat this cycle as many times as necessary.** The goal is thoroughness, not speed. Each cycle collapses what would otherwise be N+M serial round-trips into just 2 turns; the total number of cycles is still determined by you based on the sufficiency of the collected information.
 
       ## Tool-Use Guidelines
 
