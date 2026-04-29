@@ -113,7 +113,7 @@ template:
         - Searching multiple independent keywords or angles of the same question at once (e.g., 3–5 `google_search` calls with different query strings).
         - Scraping multiple URLs that were returned by a previous search step (e.g., 3–5 `scrape_webpage` / `jina` calls at once).
         - Any batch of read-only lookups that do not depend on each other.
-      - **Use sequential (single) calls** when a later operation depends on the result of an earlier one (e.g., you must first search to discover URLs before you can scrape them).
+      - **Use a single tool call (sequential across responses)** when a later operation depends on the result of an earlier one. For example, you cannot scrape a URL in the same response as the search that discovers it — you must wait for the search results to arrive before emitting the scrape calls. The parallelism applies **within** each response, not across responses.
 
       ### Recommended two-phase search workflow
 
