@@ -214,6 +214,7 @@ class TaskExecutor:
                     # Calculate turn count and get message history
                     current_turn = 0
                     messages = []
+                    message_history = []
                     for agent_name, state in agent_states.items():
                         state_data = (
                             state.state
