@@ -151,19 +151,15 @@ class GPTOpenAIClient(LLMClientBase):
                                     tool_calls_raw[idx] = {
                                         "id": getattr(tc, "id", "") or "",
                                         "type": "function",
-                                        "function": {
-                                            "name": (getattr(tc.function, "name", "") or "") if tc.function else "",
-                                            "arguments": "",
-                                        },
+                                        "function": {"name": "", "arguments": ""},
                                     }
-                                else:
-                                    if getattr(tc, "id", None):
-                                        tool_calls_raw[idx]["id"] = tc.id
-                                    if tc.function:
-                                        if getattr(tc.function, "name", None):
-                                            tool_calls_raw[idx]["function"]["name"] += tc.function.name
-                                        if getattr(tc.function, "arguments", None):
-                                            tool_calls_raw[idx]["function"]["arguments"] += tc.function.arguments
+                                if getattr(tc, "id", None):
+                                    tool_calls_raw[idx]["id"] = tc.id
+                                if tc.function:
+                                    if getattr(tc.function, "name", None):
+                                        tool_calls_raw[idx]["function"]["name"] += tc.function.name
+                                    if getattr(tc.function, "arguments", None):
+                                        tool_calls_raw[idx]["function"]["arguments"] += tc.function.arguments
                         fr = chunk.choices[0].finish_reason
                         if fr:
                             finish_reason = fr

@@ -204,7 +204,7 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
             _partial_text: list[str] = []
             _last_tracer_update: list[float] = [time.monotonic()]
 
-            def _on_streaming_text(chunk: str, _hist=message_history) -> None:
+            def _on_streaming_text(chunk: str) -> None:
                 _partial_text.append(chunk)
                 if self.verbose:
                     print(chunk, end="", flush=True)
@@ -217,7 +217,7 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                         self.name,
                         states={
                             "input_ctx": ctx,
-                            "message_history": list(_hist) + [partial_msg],
+                            "message_history": list(message_history) + [partial_msg],
                         },
                     )
 

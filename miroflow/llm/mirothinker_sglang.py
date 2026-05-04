@@ -159,8 +159,9 @@ class MiroThinkerSGLangClient(LLMClientBase):
                 full_text = "".join(accumulated)
                 if not full_text.strip():
                     raise Exception(
-                        "LLM streaming response is empty. "
-                        "This is likely due to thinking block using all tokens."
+                        "LLM returned an empty response after streaming. "
+                        "The thinking block may have consumed all available tokens. "
+                        "Consider increasing max_tokens or reducing the context size."
                     )
                 if finish_reason == "length":
                     raise ContextLimitError(
