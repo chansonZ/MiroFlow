@@ -48,6 +48,7 @@ class ClaudeOpenRouterClient(LLMClientBase):
         messages: List[Dict[str, Any]],
         tools_definitions,
         keep_tool_result: int = -1,
+        on_streaming_text=None,
     ):
         """
         Send message to OpenAI API.

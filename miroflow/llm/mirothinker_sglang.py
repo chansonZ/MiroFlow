@@ -4,7 +4,8 @@
 
 import asyncio
 import re
-from typing import Any, Dict, List
+import types
+from typing import Any, Callable, Dict, List, Optional
 
 import tiktoken
 from omegaconf import DictConfig
@@ -21,6 +22,13 @@ from miroflow.llm.base import LLMClientBase, ContextLimitError
 from miroflow.logging.task_tracer import get_tracer, get_current_task_context_var
 
 logger = get_tracer()
+
+
+def _build_streaming_mock_response(full_text: str, finish_reason: str = "stop"):
+    """Create a minimal response-like object for process_llm_response after streaming."""
+    msg = types.SimpleNamespace(content=full_text)
+    choice = types.SimpleNamespace(finish_reason=finish_reason, message=msg)
+    return types.SimpleNamespace(choices=[choice], usage=None)
 
 
 class MiroThinkerSGLangClient(LLMClientBase):
@@ -58,11 +66,13 @@ class MiroThinkerSGLangClient(LLMClientBase):
         messages: List[Dict[str, Any]],
         tools_definitions,
         keep_tool_result: int = -1,
+        on_streaming_text: Optional[Callable[[str], None]] = None,
     ):
         """
         Send message to MiroThinker API.
         :param system_prompt: System prompt string.
         :param messages: Message history list.
+        :param on_streaming_text: Optional callback called with each text chunk during streaming.
         :return: API response object or None (if error).
         """
         logger.debug(
@@ -93,6 +103,10 @@ class MiroThinkerSGLangClient(LLMClientBase):
             messages, keep_tool_result, strip_think=self.strip_think_from_history
         )
 
+        task_ctx = get_current_task_context_var()
+        session_id = task_ctx.task_id if task_ctx else "default"
+        extra_headers = {"x-upstream-session-id": session_id}
+
         current_max_tokens = self.max_tokens
 
         try:
@@ -103,7 +117,6 @@ class MiroThinkerSGLangClient(LLMClientBase):
                 "temperature": temperature,
                 "max_tokens": current_max_tokens,
                 "messages": messages_copy,
-                "stream": False,
             }
 
             # Add optional parameters only if they have non-default values
@@ -121,6 +134,44 @@ class MiroThinkerSGLangClient(LLMClientBase):
                 extra_body["repetition_penalty"] = self.repetition_penalty
             if extra_body:
                 params["extra_body"] = extra_body
+
+            # ------------------------------------------------------------------
+            # Streaming path: call on_streaming_text for each text chunk
+            # ------------------------------------------------------------------
+            if on_streaming_text is not None and self.async_client:
+                params["stream"] = True
+                accumulated: list[str] = []
+                finish_reason = "stop"
+
+                stream = await self.client.chat.completions.create(
+                    **params, extra_headers=extra_headers
+                )
+                async for chunk in stream:
+                    if chunk.choices:
+                        delta_content = chunk.choices[0].delta.content
+                        if delta_content:
+                            accumulated.append(delta_content)
+                            on_streaming_text(delta_content)
+                        fr = chunk.choices[0].finish_reason
+                        if fr:
+                            finish_reason = fr
+
+                full_text = "".join(accumulated)
+                if not full_text.strip():
+                    raise Exception(
+                        "LLM streaming response is empty. "
+                        "This is likely due to thinking block using all tokens."
+                    )
+                if finish_reason == "length":
+                    raise ContextLimitError(
+                        "(finish_reason=length) Streaming response truncated due to context limit"
+                    )
+                return _build_streaming_mock_response(full_text, finish_reason)
+
+            # ------------------------------------------------------------------
+            # Non-streaming path (original logic with adaptive length retry)
+            # ------------------------------------------------------------------
+            params["stream"] = False
 
             # Adaptive retry loop for length-truncated / severe-repeat responses
             best_response = None

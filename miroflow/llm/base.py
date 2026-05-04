@@ -13,6 +13,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     Optional,
@@ -90,8 +91,15 @@ class LLMClientBase(ABC):
         messages: List[Dict],
         tools_definitions: List[Dict],
         keep_tool_result: int = -1,
+        on_streaming_text: Optional[Callable[[str], None]] = None,
     ) -> Any:
-        """Create provider-specific message - implemented by subclass"""
+        """Create provider-specific message - implemented by subclass.
+
+        If *on_streaming_text* is provided and the subclass supports streaming,
+        it should call the callback with each text chunk as it arrives.  The
+        final return value must still be a complete (mock) response object that
+        ``process_llm_response`` can consume.
+        """
         raise NotImplementedError("subclass must implement this")
 
     @abstractmethod
@@ -204,9 +212,16 @@ class LLMClientBase(ABC):
         message_history: List[Dict] = None,
         tool_definitions: List[Dict] = None,
         keep_tool_result: int = None,
+        on_streaming_text: Optional[Callable[[str], None]] = None,
     ):
         """
-        Call LLM to generate response, supports tool calls - unified implementation
+        Call LLM to generate response, supports tool calls - unified implementation.
+
+        *on_streaming_text* is an optional callback ``(chunk: str) -> None`` that
+        will be invoked with each text chunk as it is produced.  Clients that
+        support streaming call it in real-time; for clients that do not support
+        streaming the callback is called once with the complete response text
+        after the call returns.
         """
         assert (
             message_text is not None or message_history is not None
@@ -226,7 +241,14 @@ class LLMClientBase(ABC):
                 {"role": "user", "content": [{"type": "text", "text": message_text}]}
             )
 
-        response = None
+        # Wrap callback to detect whether the subclass actually streamed
+        _streaming_happened: list[bool] = [False]
+
+        def _tracked_callback(chunk: str) -> None:
+            _streaming_happened[0] = True
+            on_streaming_text(chunk)
+
+        on_streaming_text_to_pass = _tracked_callback if on_streaming_text else None
 
         # Unified LLM call handling
         response = await self._create_message(
@@ -234,10 +256,21 @@ class LLMClientBase(ABC):
             messages=message_history,
             tools_definitions=tool_definitions,
             keep_tool_result=keep_tool_result,
+            on_streaming_text=on_streaming_text_to_pass,
         )
         response_text, is_invalid, assistant_message = self.process_llm_response(
             response
         )
+
+        # Fallback for non-streaming clients: emit the full text at once
+        if (
+            on_streaming_text is not None
+            and not _streaming_happened[0]
+            and response_text
+            and not is_invalid
+        ):
+            on_streaming_text(response_text)
+
         return LLMOutput(
             response_text=response_text,
             is_invalid=is_invalid,
