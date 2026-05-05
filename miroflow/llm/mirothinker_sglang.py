@@ -94,10 +94,6 @@ class MiroThinkerSGLangClient(LLMClientBase):
             messages, keep_tool_result, strip_think=self.strip_think_from_history
         )
 
-        task_ctx = get_current_task_context_var()
-        session_id = task_ctx.task_id if task_ctx else "default"
-        extra_headers = {"x-upstream-session-id": session_id}
-
         current_max_tokens = self.max_tokens
 
         try:
