@@ -11,7 +11,6 @@ Supports automatic rollback retry when LLM output is truncated or malformed.
 from __future__ import annotations
 
 import json
-import time
 from collections import defaultdict
 
 from omegaconf import DictConfig
@@ -198,31 +197,8 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                 print(f"[Turn {turn_count}] Starting (max_turns={max_turns})")
                 print(f"{'='*60}")
 
-            # ------------------------------------------------------------------
-            # Build streaming callback for real-time thinking output
-            # ------------------------------------------------------------------
-            _partial_text: list[str] = []
-            _last_tracer_update: list[float] = [time.monotonic()]
-
-            def _on_streaming_text(chunk: str) -> None:
-                _partial_text.append(chunk)
-                if self.verbose:
-                    print(chunk, end="", flush=True)
-                # Update tracer every 2 s so the web app can show partial output
-                now = time.monotonic()
-                if now - _last_tracer_update[0] >= 2.0:
-                    _last_tracer_update[0] = now
-                    partial_msg = {"role": "assistant", "content": "".join(_partial_text)}
-                    tracer.save_agent_states(
-                        self.name,
-                        states={
-                            "input_ctx": ctx,
-                            "message_history": list(message_history) + [partial_msg],
-                        },
-                    )
-
             if self.verbose:
-                print(f"[Turn {turn_count}] Streaming LLM response:\n", flush=True)
+                print(f"[Turn {turn_count}] Calling LLM...", flush=True)
 
             # LLM call (with ContextLimitError fallback)
             try:
@@ -230,7 +206,6 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                     system_prompt=system_prompt,
                     message_history=message_history,
                     tool_definitions=self.tool_definitions,
-                    on_streaming_text=_on_streaming_text,
                 )
             except ContextLimitError:
                 tracer.log(
@@ -241,8 +216,11 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                 break
 
             if self.verbose:
-                # Newline after streaming output, then show turn summary
-                print(f"\n[Turn {turn_count}] Done.")
+                print(f"[Turn {turn_count}] LLM response received:")
+                preview = llm_output.response_text
+                if len(preview) > 500:
+                    preview = preview[:500] + "..."
+                print(preview)
 
             if llm_output.is_invalid:
                 task_failed = True
