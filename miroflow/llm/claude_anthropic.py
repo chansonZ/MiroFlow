@@ -45,7 +45,6 @@ class ClaudeAnthropicClient(LLMClientBase):
         messages,
         tools_definitions,
         keep_tool_result: int = -1,
-        on_streaming_text=None,
     ):
         """
         Send message to Anthropic API.

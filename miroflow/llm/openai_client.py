@@ -4,8 +4,7 @@
 
 import asyncio
 import re
-import types
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import tiktoken
 from omegaconf import DictConfig
@@ -85,7 +84,6 @@ class UnifiedOpenAIClient(LLMClientBase):
         messages: List[Dict[str, Any]],
         tools_definitions,
         keep_tool_result: int = -1,
-        on_streaming_text: Optional[Callable[[str], None]] = None,
     ):
         """
         Send message to OpenAI API (async/sync supported).
@@ -119,68 +117,6 @@ class UnifiedOpenAIClient(LLMClientBase):
 
         # 5) Execute call (may do oai_tool_thinking two-step only for native tools)
         try:
-            # ------------------------------------------------------------------
-            # Streaming path: stream text (and tool_calls if native) in real-time
-            # ------------------------------------------------------------------
-            if on_streaming_text is not None and self.async_client:
-                params["stream"] = True
-                accumulated_text: list[str] = []
-                tool_calls_raw: dict[int, dict] = {}
-                finish_reason = "stop"
-
-                stream = await self.client.chat.completions.create(**params)
-                async for chunk in stream:
-                    if chunk.choices:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            accumulated_text.append(delta.content)
-                            on_streaming_text(delta.content)
-                        if hasattr(delta, "tool_calls") and delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.index
-                                if idx not in tool_calls_raw:
-                                    tool_calls_raw[idx] = {
-                                        "id": getattr(tc, "id", "") or "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                if getattr(tc, "id", None):
-                                    tool_calls_raw[idx]["id"] = tc.id
-                                if tc.function:
-                                    if getattr(tc.function, "name", None):
-                                        tool_calls_raw[idx]["function"]["name"] += tc.function.name
-                                    if getattr(tc.function, "arguments", None):
-                                        tool_calls_raw[idx]["function"]["arguments"] += tc.function.arguments
-                        fr = chunk.choices[0].finish_reason
-                        if fr:
-                            finish_reason = fr
-
-                full_text = "".join(accumulated_text)
-                if finish_reason == "length":
-                    raise ContextLimitError(
-                        "(finish_reason=length) Streaming response truncated due to context limit"
-                    )
-                if tool_calls_raw and finish_reason == "tool_calls":
-                    tool_calls_ns = [
-                        types.SimpleNamespace(
-                            id=v["id"],
-                            type="function",
-                            function=types.SimpleNamespace(
-                                name=v["function"]["name"],
-                                arguments=v["function"]["arguments"],
-                            ),
-                        )
-                        for _, v in sorted(tool_calls_raw.items())
-                    ]
-                    msg = types.SimpleNamespace(content=full_text, tool_calls=tool_calls_ns)
-                else:
-                    msg = types.SimpleNamespace(content=full_text)
-                choice = types.SimpleNamespace(finish_reason=finish_reason, message=msg)
-                return types.SimpleNamespace(choices=[choice], usage=None)
-
-            # ------------------------------------------------------------------
-            # Non-streaming path
-            # ------------------------------------------------------------------
             params["stream"] = False
             if self.oai_tool_thinking and tool_mode == "openai_native":
                 response = await self._handle_oai_tool_thinking(
