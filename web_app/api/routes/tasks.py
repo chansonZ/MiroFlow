@@ -127,14 +127,37 @@ async def get_task_status(
 
     if task.status == "running":
         progress = task_executor.get_task_progress(task_id)
-        # Update session with progress
-        session_manager.update_task(
-            task_id,
-            {
-                "current_turn": progress.get("current_turn", 0),
-                "step_count": progress.get("step_count", 0),
-            },
-        )
+        progress_messages = progress.get("messages", [])
+        progress_trajectory = progress.get("trajectory", [])
+
+        if progress_messages:
+            # Persist latest messages/trajectory to session file so they survive
+            # across polls even if the in-memory tracer is unavailable later.
+            session_manager.update_task(
+                task_id,
+                {
+                    "current_turn": progress.get("current_turn", 0),
+                    "step_count": progress.get("step_count", 0),
+                    "messages": progress_messages,
+                    "trajectory": progress_trajectory,
+                },
+            )
+            stored_messages = progress_messages
+            stored_trajectory = progress_trajectory
+        else:
+            # Tracer returned empty (not ready yet or transient failure).
+            # Fall back to whatever was previously persisted to the session file.
+            session_manager.update_task(
+                task_id,
+                {
+                    "current_turn": progress.get("current_turn", 0),
+                    "step_count": progress.get("step_count", 0),
+                },
+            )
+            session_data = session_manager._read_session(task_id)
+            if session_data:
+                stored_messages = session_data.get("messages", [])
+                stored_trajectory = session_data.get("trajectory", [])
     else:
         # For completed/failed/cancelled tasks, get stored messages from session
         session_data = session_manager._read_session(task_id)
@@ -142,12 +165,12 @@ async def get_task_status(
             stored_messages = session_data.get("messages", [])
             stored_trajectory = session_data.get("trajectory", [])
 
-    # Convert messages to Message objects - use progress messages for running, stored for completed
-    raw_messages = progress.get("messages", []) if progress else stored_messages
-    messages = [Message(**m) for m in raw_messages]
+    # Convert messages to Message objects
+    raw_messages = stored_messages
+    messages = [Message(**m) for m in raw_messages if isinstance(m, dict)]
 
     # Build trajectory list
-    raw_trajectory = progress.get("trajectory", []) if progress else stored_trajectory
+    raw_trajectory = stored_trajectory
     trajectory = [TrajectoryEvent(**e) for e in raw_trajectory if isinstance(e, dict)]
 
     return TaskStatusUpdate(

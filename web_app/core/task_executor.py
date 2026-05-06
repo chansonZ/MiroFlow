@@ -244,7 +244,7 @@ class TaskExecutor:
                         "trajectory": trajectory,
                     }
         except Exception:
-            logger.debug("Failed to retrieve task progress", exc_info=True)
+            logger.warning("Failed to retrieve task progress", exc_info=True)
 
         return {"current_turn": 0, "step_count": 0, "recent_logs": [], "messages": [], "trajectory": []}
 
