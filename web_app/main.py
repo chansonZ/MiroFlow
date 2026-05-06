@@ -4,6 +4,8 @@
 
 """MiroFlow Web API - FastAPI application entry point."""
 
+import asyncio
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,9 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Load environment variables
 dotenv.load_dotenv()
 
-from .api.dependencies import init_dependencies  # noqa: E402
+from .api.dependencies import get_agent_pool, init_dependencies  # noqa: E402
 from .api.routes import configs, health, tasks, uploads  # noqa: E402
 from .core.config import config  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -32,6 +36,21 @@ async def lifespan(app: FastAPI):
     config.uploads_dir.mkdir(parents=True, exist_ok=True)
     config.logs_dir.mkdir(parents=True, exist_ok=True)
     init_dependencies()
+
+    # Warm up the agent pool in a background thread so that the app is
+    # immediately ready to serve requests (health checks, etc.) while the
+    # potentially slow agent-build process runs concurrently.
+    pool = get_agent_pool()
+    if pool is not None and config.agent_pool_size > 0:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, pool.warmup)
+        logger.info(
+            "Agent pool warmup started in background "
+            "(pool_size=%d, config=%s)",
+            config.agent_pool_size,
+            config.default_config,
+        )
+
     yield
     # Shutdown - cleanup if needed
 
