@@ -44,6 +44,11 @@ class AppConfig:
     max_concurrent_tasks: int = 4
     default_poll_interval_ms: int = 2000
 
+    # Agent pool settings
+    agent_pool_size: int = 10
+    agent_pool_max_overflow: int = -1  # -1 = unlimited
+    agent_pool_strategy: str = "overflow_create"  # overflow_create | block | reject
+
     # Upload settings
     max_upload_size_mb: int = 100
     allowed_extensions: set[str] = field(
@@ -70,6 +75,13 @@ class AppConfig:
         self.host = os.getenv("MIROFLOW_HOST", self.host)
         self.port = int(os.getenv("MIROFLOW_PORT", self.port))
         self.debug = os.getenv("MIROFLOW_DEBUG", "").lower() in ("true", "1", "yes")
+        self.agent_pool_size = int(os.getenv("AGENT_POOL_SIZE", self.agent_pool_size))
+        self.agent_pool_max_overflow = int(
+            os.getenv("AGENT_POOL_MAX_OVERFLOW", self.agent_pool_max_overflow)
+        )
+        self.agent_pool_strategy = os.getenv(
+            "AGENT_POOL_STRATEGY", self.agent_pool_strategy
+        )
 
 
 # Global config instance

@@ -30,6 +30,8 @@ class TaskExecutor:
         self.executor = ThreadPoolExecutor(max_workers=config.max_concurrent_tasks)
         self._running_tasks: dict[str, threading.Thread] = {}
         self._task_tracers: dict[str, Any] = {}
+        # Agent pool — injected by dependencies after warmup (may be None)
+        self.agent_pool: Any | None = None
 
     def submit_task(
         self,
@@ -69,6 +71,9 @@ class TaskExecutor:
         os.chdir(self.config.project_root)
 
         tracer = None
+        agent = None
+        agent_is_overflow = False
+        should_release_to_pool = False  # tracks whether to return agent to pool
 
         try:
             # Import MiroFlow components (import here to avoid circular imports)
@@ -109,8 +114,40 @@ class TaskExecutor:
             tracer.set_log_path(cfg.output_dir)
             self._task_tracers[task_id] = tracer
 
-            # Build agent
-            agent = build_agent_from_config(cfg=cfg)
+            # Acquire agent — use pool when available and config matches,
+            # otherwise fall back to building a new (overflow) agent.
+            pool = self.agent_pool
+            pool_config = self.config.default_config
+            use_pool = (
+                pool is not None
+                and config_path == pool_config
+                and self.config.agent_pool_strategy == "overflow_create"
+            )
+
+            if use_pool:
+                try:
+                    agent, agent_is_overflow = pool.acquire()
+                    should_release_to_pool = True
+                    logger.debug(
+                        "task %s: acquired agent from pool (overflow=%s, available=%d)",
+                        task_id,
+                        agent_is_overflow,
+                        pool.available,
+                    )
+                except RuntimeError:
+                    # max_overflow reached — build a temporary agent anyway
+                    logger.warning(
+                        "task %s: pool max_overflow reached, building temporary agent",
+                        task_id,
+                    )
+                    agent = build_agent_from_config(cfg=cfg)
+                    agent_is_overflow = True
+                    should_release_to_pool = False
+            else:
+                # No pool, non-default config, or non-overflow strategy
+                agent = build_agent_from_config(cfg=cfg)
+                agent_is_overflow = True  # treat as overflow so it's not returned
+                should_release_to_pool = False
 
             # Build context
             ctx_kwargs: dict[str, Any] = {"task_description": task_description}
@@ -163,7 +200,17 @@ class TaskExecutor:
                 tracer.finish(status="failed", error=str(e))
 
         finally:
-            # Cleanup
+            # Release agent back to the pool (or discard overflow agent)
+            if agent is not None and should_release_to_pool and pool is not None:
+                pool.release(agent, agent_is_overflow)
+                logger.debug(
+                    "task %s: released agent (overflow=%s, pool_available=%d)",
+                    task_id,
+                    agent_is_overflow,
+                    pool.available,
+                )
+
+            # Cleanup task tracking
             if task_id in self._running_tasks:
                 del self._running_tasks[task_id]
             if task_id in self._task_tracers:
