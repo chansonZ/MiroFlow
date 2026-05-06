@@ -35,6 +35,32 @@ export interface Message {
   content: string;
 }
 
+export interface SearchResult {
+  title?: string | null;
+  url: string;
+  snippet?: string | null;
+  favicon?: string | null;
+}
+
+export type TrajectoryEventType = 'search' | 'read' | 'reasoning' | 'tool_call';
+
+export interface TrajectoryEvent {
+  id: string;
+  type: TrajectoryEventType;
+  parent_id?: string | null;
+  // search
+  query?: string | null;
+  results?: SearchResult[];
+  results_count?: number;
+  // read
+  url?: string | null;
+  // reasoning
+  text?: string | null;
+  // generic tool_call
+  tool_name?: string | null;
+  args?: Record<string, unknown> | null;
+}
+
 export interface TaskStatusUpdate {
   id: string;
   status: TaskStatus;
@@ -45,6 +71,7 @@ export interface TaskStatusUpdate {
   final_answer: string | null;
   summary: string | null;
   error_message: string | null;
+  trajectory?: TrajectoryEvent[];
 }
 
 export interface TaskListResponse {

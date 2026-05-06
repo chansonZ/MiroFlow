@@ -13,6 +13,38 @@ from pydantic import BaseModel, Field
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
 
+class SearchResult(BaseModel):
+    """A single result returned by a search tool."""
+
+    title: str | None = None
+    url: str = ""
+    snippet: str | None = None
+    favicon: str | None = None
+
+
+class TrajectoryEvent(BaseModel):
+    """A structured event in the agent's thinking trajectory."""
+
+    id: str
+    type: Literal["search", "read", "reasoning", "tool_call"]
+    parent_id: str | None = None
+
+    # search
+    query: str | None = None
+    results: list[SearchResult] = Field(default_factory=list)
+    results_count: int = 0
+
+    # read
+    url: str | None = None
+
+    # reasoning
+    text: str | None = None
+
+    # generic tool_call fallback
+    tool_name: str | None = None
+    args: dict[str, Any] | None = None
+
+
 class FileInfo(BaseModel):
     """File information for uploaded files."""
 
@@ -89,6 +121,7 @@ class TaskStatusUpdate(BaseModel):
     final_answer: str | None = None
     summary: str | None = None
     error_message: str | None = None
+    trajectory: list[TrajectoryEvent] = Field(default_factory=list)
 
 
 class UploadResponse(BaseModel):

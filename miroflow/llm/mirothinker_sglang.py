@@ -4,7 +4,7 @@
 
 import asyncio
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import tiktoken
 from omegaconf import DictConfig
@@ -21,6 +21,7 @@ from miroflow.llm.base import LLMClientBase, ContextLimitError
 from miroflow.logging.task_tracer import get_tracer, get_current_task_context_var
 
 logger = get_tracer()
+
 
 
 class MiroThinkerSGLangClient(LLMClientBase):
@@ -103,7 +104,6 @@ class MiroThinkerSGLangClient(LLMClientBase):
                 "temperature": temperature,
                 "max_tokens": current_max_tokens,
                 "messages": messages_copy,
-                "stream": False,
             }
 
             # Add optional parameters only if they have non-default values
@@ -121,6 +121,11 @@ class MiroThinkerSGLangClient(LLMClientBase):
                 extra_body["repetition_penalty"] = self.repetition_penalty
             if extra_body:
                 params["extra_body"] = extra_body
+
+            # ------------------------------------------------------------------
+            # Non-streaming path (original logic with adaptive length retry)
+            # ------------------------------------------------------------------
+            params["stream"] = False
 
             # Adaptive retry loop for length-truncated / severe-repeat responses
             best_response = None

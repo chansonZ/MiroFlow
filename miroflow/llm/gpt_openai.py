@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from omegaconf import DictConfig
 from openai import AsyncOpenAI, OpenAI
@@ -107,7 +107,6 @@ class GPTOpenAIClient(LLMClientBase):
                     "messages": messages_copy,
                     "reasoning_effort": self.reasoning_effort,
                     "tools": tool_list,
-                    "stream": False,
                 }
             else:
                 temperature = self.temperature
@@ -117,7 +116,6 @@ class GPTOpenAIClient(LLMClientBase):
                     "max_completion_tokens": self.max_tokens,
                     "messages": messages_copy,
                     "tools": tool_list,
-                    "stream": False,
                 }
 
             if self.top_p != 1.0:
@@ -128,6 +126,7 @@ class GPTOpenAIClient(LLMClientBase):
             if self.top_k != -1:
                 params["top_k"] = self.top_k
 
+            params["stream"] = False
             if self.oai_tool_thinking:
                 response = await self._handle_oai_tool_thinking(
                     params, messages, self.async_client

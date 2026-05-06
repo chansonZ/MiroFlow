@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Bot, Send, Plus, Trash2, Loader2, Menu, X, Square, Paperclip, File, ChevronDown, ChevronRight, Brain, Search, Globe, Code, Lightbulb, Wrench, List, CheckCircle } from 'lucide-react';
 import { createTask, listTasks, getTask, getTaskStatus, deleteTask, listConfigs, uploadFile } from './api/tasks';
 import { usePolling } from './hooks/usePolling';
-import type { TaskStatusUpdate, UploadResponse, FileInfo } from './types/task';
+import type { TaskStatusUpdate, UploadResponse, FileInfo, TrajectoryEvent } from './types/task';
 import MarkdownRenderer from './components/common/MarkdownRenderer';
 
 export default function App() {
@@ -399,6 +399,7 @@ export default function App() {
                   messages={messages}
                   finalAnswer={currentStatus.final_answer || undefined}
                   summary={currentStatus.summary || undefined}
+                  trajectory={completedTaskStatus?.trajectory}
                 />
               )}
 
@@ -647,23 +648,196 @@ function SummaryHeader() {
   );
 }
 
+// -------------------------------------------------------------------
+// Structured trajectory rendering
+// -------------------------------------------------------------------
+
+function UrlPill({ url, title, snippet }: { url: string; title?: string | null; snippet?: string | null }) {
+  let faviconUrl = '';
+  if (url) {
+    try {
+      const domain = new URL(url).hostname;
+      faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+    } catch { /* invalid url */ }
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex max-w-full items-center gap-2 rounded-[16px] bg-gray-100 px-2 py-1 text-sm text-gray-500 hover:bg-gray-200 transition-colors"
+      title={snippet || title || url}
+    >
+      {faviconUrl ? (
+        <img src={faviconUrl} alt="" className="h-4 w-4 rounded-full bg-slate-100 shadow flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+      ) : (
+        <Globe className="h-4 w-4 text-gray-400 flex-shrink-0" />
+      )}
+      <span className="truncate flex-1">{title || url}</span>
+    </a>
+  );
+}
+
+function ReasoningNode({ event }: { event: TrajectoryEvent }) {
+  const [open, setOpen] = useState(false);
+  if (!event.text) return null;
+  const lines = event.text.split('\n');
+  const preview = lines.slice(0, 2).join('\n');
+  const hasMore = lines.length > 2;
+  return (
+    <div className="border rounded-lg overflow-hidden bg-white border-gray-200">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+      >
+        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        <Brain className="w-4 h-4" />
+        <span>Thinking</span>
+      </button>
+      <div className="px-3 py-2 border-t border-gray-200 bg-white">
+        <pre className={`text-sm text-gray-700 whitespace-pre-wrap leading-relaxed overflow-hidden ${!open ? 'line-clamp-2' : ''}`} style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+          {open ? event.text : preview}
+        </pre>
+        {!open && hasMore && <span className="text-xs text-gray-500">...</span>}
+      </div>
+    </div>
+  );
+}
+
+function ReadNode({ event, childEvents }: { event: TrajectoryEvent; childEvents: TrajectoryEvent[] }) {
+  const url = event.url || '';
+  const childReasonings = childEvents.filter(e => e.type === 'reasoning');
+  return (
+    <div className="pl-4 border-l-2 border-green-200 space-y-2">
+      <div className="flex items-start gap-2">
+        <Globe className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-600">浏览网页 </span>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-blue-600 hover:underline break-all"
+          >
+            "{url}"
+          </a>
+        </div>
+      </div>
+      {childReasonings.map(r => (
+        <ReasoningNode key={r.id} event={r} />
+      ))}
+    </div>
+  );
+}
+
+function TrajectoryView({ events }: { events: TrajectoryEvent[] }) {
+  // Build a lookup: parent_id -> children
+  const childrenOf = (id: string) => events.filter(e => e.parent_id === id);
+
+  // Top-level events (no parent)
+  const topLevel = events.filter(e => !e.parent_id);
+
+  const renderEvent = (evt: TrajectoryEvent): React.ReactNode => {
+    const children = childrenOf(evt.id);
+
+    if (evt.type === 'search') {
+      const childReasonings = children.filter(c => c.type === 'reasoning');
+      const childReads = children.filter(c => c.type === 'read');
+      const results = evt.results || [];
+      const count = evt.results_count || results.length;
+      return (
+        <div key={evt.id} className="space-y-3">
+          {/* Search header */}
+          <div className="flex items-start gap-2">
+            <Search className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+            <span className="text-sm text-gray-700">
+              搜索：<span className="font-medium text-gray-900">"{evt.query}"</span>
+            </span>
+          </div>
+
+          {/* Results */}
+          {count > 0 && (
+            <div className="pl-6 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                <List className="w-3 h-3" />
+                <span>找到 {count} 个结果</span>
+                {childReads.length > 0 && (
+                  <span className="ml-2 text-gray-400">（实际浏览了 {childReads.length} 个）</span>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {results.map((r, idx) => (
+                  <UrlPill key={idx} url={r.url} title={r.title} snippet={r.snippet} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Post-search reasoning */}
+          {childReasonings.map(r => (
+            <div key={r.id} className="pl-6">
+              <ReasoningNode event={r} />
+            </div>
+          ))}
+
+          {/* Read events under this search */}
+          {childReads.length > 0 && (
+            <div className="pl-6 space-y-3">
+              {childReads.map(read => (
+                <ReadNode
+                  key={read.id}
+                  event={read}
+                  childEvents={childrenOf(read.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (evt.type === 'read') {
+      return <ReadNode key={evt.id} event={evt} childEvents={children} />;
+    }
+
+    if (evt.type === 'reasoning') {
+      return <ReasoningNode key={evt.id} event={evt} />;
+    }
+
+    // tool_call fallback
+    return (
+      <div key={evt.id} className="flex items-start gap-2">
+        <Wrench className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+        <span className="text-sm text-gray-600">{evt.tool_name || 'Tool call'}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-5">
+      {topLevel.map(evt => renderEvent(evt))}
+    </div>
+  );
+}
+
 // Completed view - handles all parsing and displays thinking trajectory + summary
 function CompletedView({
   messages,
   finalAnswer,
-  summary
+  summary,
+  trajectory
 }: {
   messages: Array<{ role: string; content: string }>;
   finalAnswer?: string;
   summary?: string;
+  trajectory?: TrajectoryEvent[];
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Check if there's any content to show in the trajectory
-  const hasThinkingContent = messages.some(msg => {
+  const hasThinkingContent = (trajectory && trajectory.length > 0) || messages.some(msg => {
     if (msg.role === 'user') return false;
     const parsed = parseMessageContent(msg.content);
-    // Show trajectory if there's any thinking, tool calls, or text content
     return parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
   });
 
@@ -692,39 +866,39 @@ function CompletedView({
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </button>
           {isExpanded && (
-            <div className="space-y-6 pt-4">
-              {/* Render each message with full ThinkingSection and ToolCallDisplay */}
-              {messages.map((msg, index) => {
-                if (msg.role === 'user') return null;
-                const parsed = parseMessageContent(msg.content);
-                // Show ALL messages - don't filter out those without thinking/toolCalls
-                // This ensures full trace is visible exactly as during running state
-                const hasAnyContent = parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
-                if (!hasAnyContent) return null;
+            <div className="space-y-4 pt-4">
+              {/* Structured trajectory if available, otherwise fallback to message parsing */}
+              {trajectory && trajectory.length > 0 ? (
+                <TrajectoryView events={trajectory} />
+              ) : (
+                <>
+                  {/* Fallback: render each message with ThinkingSection and ToolCallDisplay */}
+                  {messages.map((msg, index) => {
+                    if (msg.role === 'user') return null;
+                    const parsed = parseMessageContent(msg.content);
+                    const hasAnyContent = parsed.thinking || parsed.toolCalls.length > 0 || parsed.text;
+                    if (!hasAnyContent) return null;
 
-                return (
-                  <div key={index} className="space-y-3">
-                    {/* Thinking section - same style as running state */}
-                    {parsed.thinking && (
-                      <ThinkingSection content={parsed.thinking} defaultExpanded={false} />
-                    )}
-
-                    {/* Tool calls - same style as running state */}
-                    {parsed.toolCalls.length > 0 && (
-                      <div className="space-y-3">
-                        {parsed.toolCalls.map((tool, idx) => (
-                          <ToolCallDisplay key={idx} tool={tool} />
-                        ))}
+                    return (
+                      <div key={index} className="space-y-3">
+                        {parsed.thinking && (
+                          <ThinkingSection content={parsed.thinking} defaultExpanded={false} />
+                        )}
+                        {parsed.toolCalls.length > 0 && (
+                          <div className="space-y-3">
+                            {parsed.toolCalls.map((tool, idx) => (
+                              <ToolCallDisplay key={idx} tool={tool} />
+                            ))}
+                          </div>
+                        )}
+                        {parsed.text && (
+                          <SmartTextContent content={parsed.text} />
+                        )}
                       </div>
-                    )}
-
-                    {/* Text content - show any non-thinking, non-tool text */}
-                    {parsed.text && (
-                      <SmartTextContent content={parsed.text} />
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </>
+              )}
 
               {/* Thinking from final answer */}
               {parsedFinalAnswer?.thinking && (

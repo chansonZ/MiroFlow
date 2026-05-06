@@ -91,7 +91,7 @@ class LLMClientBase(ABC):
         tools_definitions: List[Dict],
         keep_tool_result: int = -1,
     ) -> Any:
-        """Create provider-specific message - implemented by subclass"""
+        """Create provider-specific message - implemented by subclass."""
         raise NotImplementedError("subclass must implement this")
 
     @abstractmethod
@@ -206,7 +206,7 @@ class LLMClientBase(ABC):
         keep_tool_result: int = None,
     ):
         """
-        Call LLM to generate response, supports tool calls - unified implementation
+        Call LLM to generate response, supports tool calls - unified implementation.
         """
         assert (
             message_text is not None or message_history is not None
@@ -226,8 +226,6 @@ class LLMClientBase(ABC):
                 {"role": "user", "content": [{"type": "text", "text": message_text}]}
             )
 
-        response = None
-
         # Unified LLM call handling
         response = await self._create_message(
             system_prompt=system_prompt,
@@ -238,6 +236,7 @@ class LLMClientBase(ABC):
         response_text, is_invalid, assistant_message = self.process_llm_response(
             response
         )
+
         return LLMOutput(
             response_text=response_text,
             is_invalid=is_invalid,

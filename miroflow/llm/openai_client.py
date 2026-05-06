@@ -4,7 +4,7 @@
 
 import asyncio
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import tiktoken
 from omegaconf import DictConfig
@@ -117,6 +117,7 @@ class UnifiedOpenAIClient(LLMClientBase):
 
         # 5) Execute call (may do oai_tool_thinking two-step only for native tools)
         try:
+            params["stream"] = False
             if self.oai_tool_thinking and tool_mode == "openai_native":
                 response = await self._handle_oai_tool_thinking(
                     params, messages, self.async_client

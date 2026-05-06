@@ -197,6 +197,9 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                 print(f"[Turn {turn_count}] Starting (max_turns={max_turns})")
                 print(f"{'='*60}")
 
+            if self.verbose:
+                print(f"[Turn {turn_count}] Calling LLM...", flush=True)
+
             # LLM call (with ContextLimitError fallback)
             try:
                 llm_output = await self.llm_client.create_message(
@@ -213,17 +216,11 @@ class IterativeAgentWithToolAndRollback(BaseAgent):
                 break
 
             if self.verbose:
-                usage = getattr(llm_output, "usage", None)
-                if usage:
-                    print(
-                        f"[Turn {turn_count}] LLM returned | "
-                        f"prompt_tokens={getattr(usage, 'prompt_tokens', '?')}, "
-                        f"completion_tokens={getattr(usage, 'completion_tokens', '?')}"
-                    )
-                else:
-                    print(f"[Turn {turn_count}] LLM returned (no usage info)")
-                resp_preview = (llm_output.response_text or "")[:200]
-                print(f"[Turn {turn_count}] Response preview: {resp_preview}")
+                print(f"[Turn {turn_count}] LLM response received:")
+                preview = llm_output.response_text
+                if len(preview) > 500:
+                    preview = preview[:500] + "..."
+                print(preview)
 
             if llm_output.is_invalid:
                 task_failed = True
