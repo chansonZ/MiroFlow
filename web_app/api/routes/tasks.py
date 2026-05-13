@@ -156,6 +156,28 @@ async def get_task_status(
     )
 
 
+@router.post("/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+    task_executor: TaskExecutor = Depends(get_task_executor),
+) -> dict[str, str]:
+    """Cancel a running task without deleting it."""
+    task = session_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task cannot be cancelled (status: {task.status})",
+        )
+
+    task_executor.cancel_task(task_id)
+
+    return {"message": "Task cancellation requested", "id": task_id}
+
+
 @router.delete("/{task_id}")
 async def delete_task(
     task_id: str,

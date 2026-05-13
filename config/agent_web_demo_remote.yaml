@@ -1,0 +1,72 @@
+# MiroFlow Web Demo Configuration - Remote MCP Services
+#
+# This variant connects to MCP tool servers that are deployed as independent
+# long-lived HTTP services (via docker-compose.mcp.yml or start_mcp_servers.sh),
+# rather than spawning a new subprocess per agent run.
+#
+# Benefits over the stdio-based agent_web_demo.yaml:
+#   - Zero subprocess start/stop overhead per task
+#   - MCP servers share state (e.g., sandbox sessions) across tasks if desired
+#   - Easier to scale: each MCP service can run on a separate host
+#   - Simpler resource management in multi-user web deployments
+#
+# Usage:
+#   1. Start MCP services first:
+#        bash scripts/start_mcp_servers.sh
+#      or:
+#        docker compose -f docker-compose.mcp.yml up -d
+#
+#   2. Run the web app:
+#        python web_app/main.py --config-name agent_web_demo_remote
+
+defaults:
+  - override hydra/job_logging: none
+  - _self_
+
+entrypoint: main_agent
+
+main_agent:
+  name: main_agent
+  type: IterativeAgentWithToolAndRollback
+  max_turns: 30
+
+  llm:
+    _base_: config/llm/base_mirothinker.yaml
+    provider_class: MiroThinkerSGLangClient
+    model_name: mirothinker-v1.5
+
+  prompt: config/prompts/prompt_main_agent.yaml
+
+  # Remote tool endpoints - connect to independently running MCP HTTP services.
+  # URLs can be overridden via environment variables (see each *-remote.yaml).
+  tools:
+    - config/tool/tool-code-sandbox-remote.yaml
+    - config/tool/tool-serper-search-remote.yaml
+    - config/tool/tool-jina-scrape-remote.yaml
+    - config/tool/tool-reading-remote.yaml
+
+  input_processor:
+    - ${input-message-generator}
+
+  output_processor:
+    - ${output-summary}
+    - ${output-final-answer-extraction}
+
+# Input processor: generates initial message from task description
+input-message-generator:
+  type: InputMessageGenerator
+
+# Output processor: summarizes conversation
+output-summary:
+  type: SummaryGenerator
+
+# Output processor: extracts final answer
+output-final-answer-extraction:
+  type: FinalAnswerExtractor
+  prompt: config/prompts/prompt_final_answer_extraction.yaml
+  llm:
+    _base_: config/llm/base_mirothinker.yaml
+    model_name: mirothinker-v1.5
+
+# Output directory for logs
+output_dir: logs/gradio_runs/

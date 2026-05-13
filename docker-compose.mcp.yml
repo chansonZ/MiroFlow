@@ -1,0 +1,140 @@
+# docker-compose.mcp.yml
+#
+# Deploys all MiroFlow MCP tool servers as independent long-lived HTTP services.
+# These services remain running across multiple agent tasks, eliminating the
+# per-task subprocess start/stop overhead.
+#
+# Prerequisites:
+#   - Build or pull the miroflow Docker image:
+#       docker build -t miroflow .
+#   - Copy .env.example to .env and fill in your API keys.
+#
+# Usage:
+#   # Start MCP services (detached):
+#   docker compose -f docker-compose.mcp.yml up -d
+#
+#   # View logs:
+#   docker compose -f docker-compose.mcp.yml logs -f
+#
+#   # Stop services:
+#   docker compose -f docker-compose.mcp.yml down
+#
+# After starting, run the web app (separately or via docker compose):
+#   python web_app/main.py --config-name agent_web_demo_remote
+
+services:
+  # ── Serper Search ──────────────────────────────────────────────────────────
+  mcp-serper-search:
+    image: miroflow
+    command: >
+      python -m miroflow.tool.mcp_servers.serper_search
+      --transport http --port 8001 --path /mcp
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      # Allow the web-app container to override the bind host if needed
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - SERPER_BASE_URL=${SERPER_BASE_URL:-https://google.serper.dev}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/mcp')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Code Sandbox ────────────────────────────────────────────────────────────
+  mcp-code-sandbox:
+    image: miroflow
+    command: >
+      python -m miroflow.tool.mcp_servers.code_sandbox
+      --transport http --port 8002 --path /mcp
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    environment:
+      - E2B_API_KEY=${E2B_API_KEY}
+      - LOGS_DIR=/app/logs
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8002/mcp')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Jina Scrape ─────────────────────────────────────────────────────────────
+  mcp-jina-scrape:
+    image: miroflow
+    command: >
+      python -m miroflow.tool.mcp_servers.jina_scrape
+      --transport http --port 8003 --path /mcp
+    ports:
+      - "8003:8003"
+    env_file:
+      - .env
+    environment:
+      - JINA_API_KEY=${JINA_API_KEY}
+      - JINA_BASE_URL=${JINA_BASE_URL:-https://r.jina.ai}
+      - SUMMARY_LLM_BASE_URL=${SUMMARY_LLM_BASE_URL}
+      - SUMMARY_LLM_MODEL_NAME=${SUMMARY_LLM_MODEL_NAME}
+      - SUMMARY_LLM_API_KEY=${SUMMARY_LLM_API_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8003/mcp')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Reading ──────────────────────────────────────────────────────────────────
+  mcp-reading:
+    image: miroflow
+    command: >
+      python -m miroflow.tool.mcp_servers.reading_mcp_server
+      --transport http --port 8004 --path /mcp
+    ports:
+      - "8004:8004"
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8004/mcp')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── Web App (optional - can also be run outside Docker) ─────────────────────
+  web-app:
+    image: miroflow
+    command: python web_app/main.py --config-name agent_web_demo_remote
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      # Override tool URLs to use Docker service names instead of localhost
+      - TOOL_SERPER_SEARCH_URL=http://mcp-serper-search:8001/mcp
+      - TOOL_CODE_SANDBOX_URL=http://mcp-code-sandbox:8002/mcp
+      - TOOL_JINA_SCRAPE_URL=http://mcp-jina-scrape:8003/mcp
+      - TOOL_READING_URL=http://mcp-reading:8004/mcp
+    depends_on:
+      mcp-serper-search:
+        condition: service_healthy
+      mcp-code-sandbox:
+        condition: service_healthy
+      mcp-jina-scrape:
+        condition: service_healthy
+      mcp-reading:
+        condition: service_healthy
+    restart: unless-stopped
